@@ -65,6 +65,29 @@ That leaves a `tinyrouter` executable in the working directory. Swap `linux-x64`
 
 On macOS, extract with `tar` as above rather than double-clicking the archive: Finder copies its quarantine flag onto the extracted executable, and Gatekeeper then reports the executable as damaged because these builds are ad-hoc signed rather than notarized.
 
+### Container
+
+Every release also publishes a multi-architecture image (amd64 and arm64) to the GitHub Container Registry:
+
+```bash
+docker run --rm -p 8080:8080 --env-file .env \
+  -v "$PWD/tinyrouter.yaml:/etc/tinyrouter/tinyrouter.yaml:ro" \
+  ghcr.io/honzabit/tinyrouter:latest
+```
+
+```yaml
+services:
+  tinyrouter:
+    image: ghcr.io/honzabit/tinyrouter:latest
+    ports: ["8080:8080"]
+    env_file: .env
+    volumes:
+      - ./tinyrouter.yaml:/etc/tinyrouter/tinyrouter.yaml:ro
+    restart: unless-stopped
+```
+
+`0.1.1` pins one release, `0.1` follows its patches, and `latest` follows the newest release; prereleases are only ever published under their exact version. The image runs as a non-root user and holds nothing but the executable and CA certificates.
+
 To run from source instead, follow the quick start below.
 
 ## Quick start
@@ -286,7 +309,7 @@ The workflow re-runs the full suite, gates on the live smoke checks, then builds
 
 The compiled executable embeds the Bun runtime. It is operationally standalone, although larger than an equivalent Go executable.
 
-Build the container:
+Build the container locally, as CI does on every push, rather than pulling the published image:
 
 ```bash
 docker build -t tinyrouter .

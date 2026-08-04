@@ -22,3 +22,7 @@ jobs:
       - run: bun test
       - run: bun run build
       - run: ./dist/tinyrouter --version
+      # The release publishes this image, so a broken Dockerfile should fail
+      # here rather than after a tag has already been cut.
+      - run: docker build -t tinyrouter:ci .
+      - run: docker run --rm tinyrouter:ci --version
