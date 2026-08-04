@@ -151,6 +151,24 @@ The native `openai`, `anthropic`, and `gemini` provider types require `api_key`.
 
 Use `tinyrouter --check --config tinyrouter.yaml` to validate a file. `--print-config` shows the resolved configuration with API keys redacted.
 
+### Finding model IDs
+
+A target's model half is passed to the provider verbatim, so it must be a model ID that provider currently serves to your account. Model IDs change over time, and the ones in `tinyrouter.example.yaml` are illustrative — an ID your key cannot reach comes back as a `404` from the provider, not as a configuration error. To list what your keys can actually reach:
+
+```bash
+curl -s -H "x-goog-api-key: $GEMINI_API_KEY" https://generativelanguage.googleapis.com/v1beta/models
+```
+
+```bash
+curl -s -H "authorization: Bearer $OPENAI_API_KEY" https://api.openai.com/v1/models
+```
+
+```bash
+curl -s -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" https://api.anthropic.com/v1/models
+```
+
+TinyRouter's own `GET /v1/models` is a different list: it reports the aliases and targets in your configuration, not the catalog a provider offers.
+
 ## Routing contract
 
 A request can name either an alias such as `smart` or a direct target such as `anthropic/claude-sonnet-4-6`.

@@ -8,11 +8,15 @@ on:
 permissions:
   contents: read
 
+# Smoke tests check plumbing, not model quality, so these are deliberately
+# small and widely available. Model IDs drift and differ by account: override
+# any of them with a repository variable (Settings -> Secrets and variables ->
+# Actions -> Variables) rather than editing this file.
 env:
-  SMOKE_OPENAI_MODEL: gpt-5-mini
-  SMOKE_ANTHROPIC_MODEL: claude-haiku-4-5
-  SMOKE_GEMINI_MODEL: gemini-3-flash
-  OLLAMA_MODEL: qwen2.5:0.5b
+  SMOKE_OPENAI_MODEL: ${{ vars.SMOKE_OPENAI_MODEL || 'gpt-5-mini' }}
+  SMOKE_ANTHROPIC_MODEL: ${{ vars.SMOKE_ANTHROPIC_MODEL || 'claude-haiku-4-5' }}
+  SMOKE_GEMINI_MODEL: ${{ vars.SMOKE_GEMINI_MODEL || 'gemini-2.5-flash' }}
+  OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL || 'qwen2.5:0.5b' }}
 
 jobs:
   local-model:
