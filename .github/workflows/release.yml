@@ -60,23 +60,38 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
+      # Archives rather than bare executables: extracting with tar does not
+      # propagate macOS's quarantine flag, so a downloaded build is not
+      # reported as damaged. They also cut the download by roughly two thirds.
+      # Names are unversioned so the /releases/latest/download/ URLs stay
+      # stable, and each archive holds a single executable named `tinyrouter`.
       - name: Build executables
         run: |
-          mkdir -p dist
+          mkdir -p dist build
           for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
             bun build src/main.ts --compile --target="bun-$target" \
-              --outfile "dist/tinyrouter-$target"
+              --outfile build/tinyrouter
+            chmod +x build/tinyrouter
+            tar -czf "dist/tinyrouter-$target.tar.gz" -C build tinyrouter
+            rm build/tinyrouter
           done
-          cd dist && sha256sum tinyrouter-* > SHA256SUMS
-      - name: Verify the native executable runs
+          cd dist && sha256sum ./*.tar.gz > SHA256SUMS
+      - name: Verify the native archive
         run: |
-          chmod +x dist/tinyrouter-linux-x64
-          actual=$(dist/tinyrouter-linux-x64 --version)
+          tar -xzf dist/tinyrouter-linux-x64.tar.gz -C build
+          actual=$(build/tinyrouter --version)
           expected="${{ inputs.tag || github.ref_name }}"
           if [ "v$actual" != "$expected" ]; then
             echo "Executable reports $actual, expected ${expected#v}." >&2
             exit 1
           fi
+          for target in linux-arm64 darwin-x64 darwin-arm64; do
+            contents=$(tar -tzf "dist/tinyrouter-$target.tar.gz")
+            if [ "$contents" != "tinyrouter" ]; then
+              echo "tinyrouter-$target.tar.gz contains '$contents', expected a single tinyrouter." >&2
+              exit 1
+            fi
+          done
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

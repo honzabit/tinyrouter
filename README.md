@@ -55,13 +55,17 @@ Those are good projects, and TinyRouter is not trying to replace them. It exists
 
 ## Install
 
-Every release attaches standalone executables for Linux and macOS on x64 and arm64, alongside a `SHA256SUMS` file. They embed the Bun runtime, so nothing else needs to be installed:
+Every release attaches a standalone executable for Linux and macOS on x64 and arm64, alongside a `SHA256SUMS` file. They embed the Bun runtime, so nothing else needs to be installed:
 
 ```bash
-curl -fsSL -o tinyrouter https://github.com/honzabit/tinyrouter/releases/latest/download/tinyrouter-linux-x64 && chmod +x tinyrouter
+curl -fsSL https://github.com/honzabit/tinyrouter/releases/latest/download/tinyrouter-linux-x64.tar.gz | tar -xz
 ```
 
-Swap `linux-x64` for `linux-arm64`, `darwin-x64`, or `darwin-arm64` as needed. To run from source instead, follow the quick start below.
+That leaves a `tinyrouter` executable in the working directory. Swap `linux-x64` for `linux-arm64`, `darwin-x64`, or `darwin-arm64` as needed, and check a download against `SHA256SUMS`.
+
+On macOS, extract with `tar` as above rather than double-clicking the archive: Finder copies its quarantine flag onto the extracted executable, and Gatekeeper then reports the executable as damaged because these builds are ad-hoc signed rather than notarized.
+
+To run from source instead, follow the quick start below.
 
 ## Quick start
 
@@ -278,7 +282,7 @@ That script rewrites `package.json`, commits, and creates the annotated tag; pus
 git push origin main --follow-tags
 ```
 
-The workflow re-runs the full suite, gates on the live smoke checks, then builds the four executables and publishes the release with a generated changelog. A tag whose name disagrees with `package.json` fails before anything is published, and nothing is released if smoke fails. The workflow can also be dispatched manually with an existing tag to rebuild and attach its executables.
+The workflow re-runs the full suite, gates on the live smoke checks, then builds the four archives and publishes the release with a generated changelog. A tag whose name disagrees with `package.json` fails before anything is published, and nothing is released if smoke fails. The workflow can also be dispatched manually with an existing tag to rebuild and attach its executables.
 
 The compiled executable embeds the Bun runtime. It is operationally standalone, although larger than an equivalent Go executable.
 
