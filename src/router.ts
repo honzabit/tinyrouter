@@ -1,5 +1,6 @@
 import type { TinyRouterConfig } from "./config.ts";
 import { GatewayError } from "./errors.ts";
+import { createFilterChain, filtersForProvider } from "./filters.ts";
 import type { Metrics } from "./metrics.ts";
 import type { ProviderAdapter } from "./providers/provider.ts";
 import type { AttemptRecord, ChatCompletionRequest, ResolvedTarget, RoutedResponse } from "./types.ts";
@@ -84,13 +85,21 @@ function failureWithAttempts(error: GatewayError, attempts: AttemptRecord[]): Ga
 }
 
 export class Router {
+  // Filters are scoped per provider, so each provider gets its own chain,
+  // compiled once at construction.
+  private readonly filterChains: Map<string, ReturnType<typeof createFilterChain>>;
+
   constructor(
     private readonly config: TinyRouterConfig,
     private readonly adapters: Map<string, ProviderAdapter>,
     private readonly metrics: Metrics,
     private readonly fetchFn: Fetch = fetch,
     private readonly waitFn: Wait = abortableSleep,
-  ) {}
+  ) {
+    this.filterChains = new Map(
+      [...adapters.keys()].map((id) => [id, createFilterChain(filtersForProvider(config.filters, id))]),
+    );
+  }
 
   resolve(modelOrAlias: string): ResolvedTarget[] {
     const route = this.config.routes[modelOrAlias];
@@ -132,11 +141,48 @@ export class Router {
   async route(input: ChatCompletionRequest, callerSignal: AbortSignal): Promise<RoutedResponse> {
     const targets = this.resolve(input.model);
     const attempts: AttemptRecord[] = [];
+    const filteredByProvider = new Map<string, { input: ChatCompletionRequest; redactions: number }>();
     let lastError: GatewayError | undefined;
+    let blockError: GatewayError | undefined;
 
     for (const [targetIndex, target] of targets.entries()) {
       const adapter = this.adapters.get(target.providerId);
       if (adapter === undefined) continue;
+
+      // Filter before contacting the provider, and outside the attempt loop:
+      // a block means this target may not receive this content, so the target
+      // is skipped like an unusable one rather than failing the whole request.
+      // A filter scoped to one provider must not veto the others.
+      let filtered = filteredByProvider.get(target.providerId);
+      if (filtered === undefined) {
+        const chain = this.filterChains.get(target.providerId);
+        if (chain === undefined) {
+          // Fail closed: a provider with no chain must never receive content
+          // that the configuration says should have been filtered.
+          throw new GatewayError({
+            message: `No filter chain configured for provider '${target.providerId}'.`,
+            status: 500,
+            type: "api_error",
+          });
+        }
+        const filterStartedAt = performance.now();
+        try {
+          filtered = chain(input);
+        } catch (caught) {
+          if (!(caught instanceof GatewayError)) throw caught;
+          blockError = caught;
+          attempts.push({
+            target: target.label,
+            attempt: 1,
+            durationMs: Math.round(performance.now() - filterStartedAt),
+            outcome: "blocked",
+            errorType: caught.type,
+          });
+          continue;
+        }
+        filteredByProvider.set(target.providerId, filtered);
+      }
+      const redacted = filtered.redactions > 0 ? { redactions: filtered.redactions } : {};
 
       for (let retry = 0; retry <= this.config.routing.retries; retry += 1) {
         const startedAt = performance.now();
@@ -154,12 +200,16 @@ export class Router {
         }, adapter.timeoutMs);
 
         try {
-          const upstreamRequest = adapter.createRequest(input, target.model, controller.signal);
+          const upstreamRequest = adapter.createRequest(filtered.input, target.model, controller.signal);
           const upstreamResponse = await this.fetchFn(upstreamRequest);
           const durationMs = Math.round(performance.now() - startedAt);
 
           if (upstreamResponse.ok) {
-            const normalized = await adapter.normalizeResponse(upstreamResponse, input, target.model);
+            const normalized = await adapter.normalizeResponse(
+              upstreamResponse,
+              filtered.input,
+              target.model,
+            );
             clearTimeout(timer);
             attempts.push({
               target: target.label,
@@ -167,13 +217,14 @@ export class Router {
               status: upstreamResponse.status,
               durationMs,
               outcome: "success",
+              ...redacted,
             });
             this.metrics.attempt({
               provider: target.providerId,
               model: target.model,
               status: String(upstreamResponse.status),
             });
-            return { response: normalized, target, attempts };
+            return { response: normalized, target, attempts, redactions: filtered.redactions };
           }
 
           clearTimeout(timer);
@@ -201,6 +252,7 @@ export class Router {
             outcome,
             errorType: error.type,
             ...(backoffMs > 0 ? { retryDelayMs: backoffMs } : {}),
+            ...redacted,
           });
           this.metrics.attempt({
             provider: target.providerId,
@@ -253,6 +305,7 @@ export class Router {
             outcome,
             errorType: error.type,
             ...(backoffMs > 0 ? { retryDelayMs: backoffMs } : {}),
+            ...redacted,
           });
           this.metrics.attempt({
             provider: target.providerId,
@@ -276,8 +329,11 @@ export class Router {
       }
     }
 
+    // A real provider failure outranks a block: if another target actually
+    // tried and failed, that is the honest outcome to report.
     throw failureWithAttempts(
       lastError ??
+        blockError ??
         new GatewayError({
           message: "No configured provider could serve this request.",
           status: 503,

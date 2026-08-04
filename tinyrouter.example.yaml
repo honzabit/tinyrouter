@@ -13,6 +13,17 @@ routing:
   backoff_initial_ms: 200
   backoff_max_ms: 2000
 
+# Optional deterministic request filters, applied in order per attempted
+# provider. A filter with a providers list applies only to those providers,
+# so local targets can stay unfiltered. See "Request filters" in the README
+# for the built-in pattern names.
+# filters:
+#   - type: block
+#     patterns: [anthropic_api_key, openai_api_key, aws_access_key, private_key]
+#   - type: redact
+#     patterns: [email]
+#     providers: [openai, anthropic, gemini]
+
 providers:
   openai:
     type: openai

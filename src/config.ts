@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { filterSchema } from "./filters.ts";
 
 const identifier = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 
@@ -11,19 +12,19 @@ const commonProviderFields = {
 };
 
 const providerSchema = z.discriminatedUnion("type", [
-  z.object({
+  z.strictObject({
     type: z.literal("openai"),
     ...commonProviderFields,
     api_key: z.string().min(1),
     base_url: z.url().default("https://api.openai.com/v1"),
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("openai-compatible"),
     ...commonProviderFields,
     api_key: z.string().min(1).optional(),
     base_url: z.url(),
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("anthropic"),
     ...commonProviderFields,
     api_key: z.string().min(1),
@@ -31,7 +32,7 @@ const providerSchema = z.discriminatedUnion("type", [
     anthropic_version: z.string().default("2023-06-01"),
     default_max_tokens: z.number().int().positive().default(4096),
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("gemini"),
     ...commonProviderFields,
     api_key: z.string().min(1),
@@ -39,9 +40,9 @@ const providerSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-const rawConfigSchema = z.object({
+const rawConfigSchema = z.strictObject({
   server: z
-    .object({
+    .strictObject({
       host: z.string().default("0.0.0.0"),
       port: z.number().int().min(1).max(65_535).default(8080),
       api_key: z.string().min(1).optional(),
@@ -54,7 +55,7 @@ const rawConfigSchema = z.object({
     })
     .prefault({}),
   routing: z
-    .object({
+    .strictObject({
       retries: z.number().int().min(0).max(3).default(0),
       // 529 is Anthropic's overloaded_error; without it an overloaded target
       // would neither retry nor fall back.
@@ -75,6 +76,7 @@ const rawConfigSchema = z.object({
       z.array(z.string().min(3).max(512)).min(1),
     )
     .default({}),
+  filters: z.array(filterSchema).default([]),
 });
 
 export type ProviderConfig = z.infer<typeof providerSchema>;
@@ -118,8 +120,15 @@ function validateReferences(config: TinyRouterConfig): TinyRouterConfig {
         throw new ConfigError(`Route '${route}' has invalid target '${target}'; expected provider/model.`);
       }
       const providerId = target.slice(0, slash);
-      if (!(providerId in config.providers)) {
+      if (!Object.hasOwn(config.providers, providerId)) {
         throw new ConfigError(`Route '${route}' references unknown provider '${providerId}'.`);
+      }
+    }
+  }
+  for (const [index, filter] of config.filters.entries()) {
+    for (const providerId of filter.providers ?? []) {
+      if (!Object.hasOwn(config.providers, providerId)) {
+        throw new ConfigError(`Filter ${index + 1} references unknown provider '${providerId}'.`);
       }
     }
   }

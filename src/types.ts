@@ -55,13 +55,15 @@ export interface AttemptRecord {
   attempt: number;
   status?: number;
   durationMs: number;
-  outcome: "success" | "retry" | "fallback" | "error";
+  outcome: "success" | "retry" | "fallback" | "error" | "blocked";
   errorType?: string;
   retryDelayMs?: number;
+  redactions?: number;
 }
 
 export interface RoutedResponse {
   response: Response;
   target: ResolvedTarget;
   attempts: AttemptRecord[];
+  redactions: number;
 }

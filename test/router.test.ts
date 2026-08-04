@@ -294,6 +294,228 @@ routes:
   });
 });
 
+describe("provider-scoped filters", () => {
+  test("filters apply only to their scoped providers, per attempt", async () => {
+    const config = parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: https://local.test/v1
+  cloud:
+    type: openai-compatible
+    base_url: https://cloud.test/v1
+routes:
+  smart: [local/model-a, cloud/model-b]
+filters:
+  - type: redact
+    patterns: [email]
+    providers: [cloud]
+`);
+    const bodies: Record<string, string> = {};
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        const host = new URL(request.url).hostname;
+        const body = (await request.json()) as { messages: Array<{ content: string }> };
+        bodies[host] = body.messages[0]?.content ?? "";
+        if (host === "local.test") {
+          return Response.json({ error: { message: "down" } }, { status: 503 });
+        }
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
+
+    const result = await router.route(
+      { model: "smart", messages: [{ role: "user", content: "mail jane@example.com" }] },
+      new AbortController().signal,
+    );
+    expect(bodies["local.test"]).toBe("mail jane@example.com");
+    expect(bodies["cloud.test"]).toBe("mail [redacted:email]");
+    expect(result.redactions).toBe(1);
+  });
+
+  test("a served target outside every filter scope reports zero redactions", async () => {
+    const config = parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: https://local.test/v1
+  cloud:
+    type: openai-compatible
+    base_url: https://cloud.test/v1
+routes:
+  smart: [local/model-a]
+filters:
+  - type: redact
+    patterns: [email]
+    providers: [cloud]
+`);
+    let upstreamContent = "";
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        const body = (await request.json()) as { messages: Array<{ content: string }> };
+        upstreamContent = body.messages[0]?.content ?? "";
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
+
+    const result = await router.route(
+      { model: "smart", messages: [{ role: "user", content: "mail jane@example.com" }] },
+      new AbortController().signal,
+    );
+    expect(upstreamContent).toBe("mail jane@example.com");
+    expect(result.redactions).toBe(0);
+  });
+});
+
+describe("filter blocking", () => {
+  const blockConfig = (scope: string) =>
+    parseConfig(`
+providers:
+  cloud:
+    type: openai-compatible
+    base_url: https://cloud.test/v1
+  local:
+    type: openai-compatible
+    base_url: https://local.test/v1
+routes:
+  smart: [cloud/a, local/b]
+filters:
+  - type: block
+    patterns: [email]
+${scope}
+`);
+
+  test("a scoped block skips that target and falls back to one outside the scope", async () => {
+    const config = blockConfig("    providers: [cloud]");
+    const calls: string[] = [];
+    const metrics = new Metrics();
+    const router = new Router(
+      config,
+      createAdapters(config),
+      metrics,
+      async (request) => {
+        calls.push(new URL(request.url).hostname);
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
+
+    const result = await router.route(
+      { model: "smart", messages: [{ role: "user", content: "a@b.co" }] },
+      new AbortController().signal,
+    );
+    expect(result.target.providerId).toBe("local");
+    expect(calls).toEqual(["local.test"]);
+    // The blocked target is recorded, but never as an upstream provider attempt.
+    expect(result.attempts.map((attempt) => attempt.outcome)).toEqual(["blocked", "success"]);
+    expect(metrics.render()).not.toContain('provider="cloud"');
+  });
+
+  test("an unscoped block fails the request once no target can serve it", async () => {
+    const config = blockConfig("");
+    let calls = 0;
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => {
+        calls += 1;
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
+
+    await expect(
+      router.route(
+        { model: "smart", messages: [{ role: "user", content: "a@b.co" }] },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ status: 400, code: "blocked_by_filter" });
+    expect(calls).toBe(0);
+  });
+
+  test("a scoped block does not mask a real failure of another target", async () => {
+    const config = parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: https://local.test/v1
+  cloud:
+    type: openai-compatible
+    base_url: https://cloud.test/v1
+routes:
+  smart: [local/a, cloud/b]
+filters:
+  - type: block
+    patterns: [email]
+    providers: [cloud]
+`);
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => Response.json({ error: { message: "down" } }, { status: 503 }),
+      async () => {},
+    );
+
+    // local really failed; the block on the untried cloud target must not
+    // rewrite that into a client-side 400.
+    await expect(
+      router.route(
+        { model: "smart", messages: [{ role: "user", content: "a@b.co" }] },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ status: 503 });
+  });
+
+  test("records redactions per attempt, including attempts that did not serve", async () => {
+    const config = parseConfig(`
+providers:
+  cloud:
+    type: openai-compatible
+    base_url: https://cloud.test/v1
+  local:
+    type: openai-compatible
+    base_url: https://local.test/v1
+routes:
+  smart: [cloud/a, local/b]
+filters:
+  - type: redact
+    patterns: [email]
+    providers: [cloud]
+`);
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        if (new URL(request.url).hostname === "cloud.test") {
+          return Response.json({ error: { message: "down" } }, { status: 503 });
+        }
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
+
+    const result = await router.route(
+      { model: "smart", messages: [{ role: "user", content: "mail a@b.co" }] },
+      new AbortController().signal,
+    );
+    expect(result.target.providerId).toBe("local");
+    expect(result.redactions).toBe(0);
+    expect(result.attempts[0]?.redactions).toBe(1);
+    expect(result.attempts[1]?.redactions).toBeUndefined();
+  });
+});
+
 describe("retry backoff math", () => {
   test("parseRetryAfter reads retry-after-ms, seconds, and HTTP dates", () => {
     expect(parseRetryAfter(new Headers({ "retry-after-ms": "250" }), 0)).toBe(250);

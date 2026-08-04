@@ -171,6 +171,8 @@ export function createGateway(
       result.response.headers.set("x-request-id", id);
       result.response.headers.set("x-tinyrouter-provider", result.target.providerId);
       result.response.headers.set("x-tinyrouter-model", result.target.model);
+      if (result.redactions > 0)
+        result.response.headers.set("x-tinyrouter-redactions", String(result.redactions));
       logger.log({
         level: "info",
         event: "request_completed",
@@ -182,6 +184,7 @@ export function createGateway(
         stream: input.stream === true,
         duration_ms: Math.round(performance.now() - startedAt),
         attempts: result.attempts,
+        ...(result.redactions > 0 ? { redactions: result.redactions } : {}),
       });
       return result.response;
     } catch (error) {

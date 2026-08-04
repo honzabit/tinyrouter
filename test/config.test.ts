@@ -65,6 +65,150 @@ providers:
     expect(JSON.stringify(redactConfig(config))).not.toContain("inbound");
   });
 
+  test("accepts filters and defaults to none", () => {
+    const config = parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+filters:
+  - type: redact
+    patterns: [email]
+`);
+    expect(config.filters).toEqual([{ type: "redact", patterns: ["email"] }]);
+    expect(
+      parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+`).filters,
+    ).toEqual([]);
+  });
+
+  test("rejects unknown built-in filter patterns", () => {
+    expect(() =>
+      parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+filters:
+  - type: block
+    patterns: [social_security]
+`),
+    ).toThrow(ConfigError);
+  });
+
+  test("rejects invalid custom filter regexes", () => {
+    expect(() =>
+      parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+filters:
+  - type: redact
+    name: broken
+    pattern: "[unclosed"
+`),
+    ).toThrow(/valid regular expression/);
+  });
+
+  test("rejects filters scoped to unknown providers, and empty scopes", () => {
+    expect(() =>
+      parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+filters:
+  - type: redact
+    patterns: [email]
+    providers: [missing]
+`),
+    ).toThrow(/unknown provider 'missing'/);
+    expect(() =>
+      parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+filters:
+  - type: redact
+    patterns: [email]
+    providers: []
+`),
+    ).toThrow(ConfigError);
+  });
+
+  test("rejects unknown keys instead of silently dropping them", () => {
+    // A `provider:` typo used to strip the scope and widen the filter to every
+    // provider; a misplaced `filters:` block used to disable filtering.
+    expect(() =>
+      parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+filters:
+  - type: redact
+    patterns: [email]
+    provider: [local]
+`),
+    ).toThrow(ConfigError);
+    expect(() =>
+      parseConfig(`
+routing:
+  filters:
+    - type: block
+      patterns: [email]
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+`),
+    ).toThrow(ConfigError);
+    expect(() =>
+      parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+    base_ur1: typo
+`),
+    ).toThrow(ConfigError);
+  });
+
+  test("rejects filters scoped to inherited object properties", () => {
+    expect(() =>
+      parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+filters:
+  - type: redact
+    patterns: [email]
+    providers: [constructor]
+`),
+    ).toThrow(/unknown provider 'constructor'/);
+  });
+
+  test("rejects custom filter patterns without a name", () => {
+    expect(() =>
+      parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+filters:
+  - type: redact
+    pattern: "EMP-[0-9]+"
+`),
+    ).toThrow(/name/);
+  });
+
   test("redacts provider header values", () => {
     const config = parseConfig(`
 providers:

@@ -147,6 +147,84 @@ routes:
     expect(cancelled).toBe(true);
   });
 
+  test("applies redact filters before routing and reports the count", async () => {
+    const config = parseConfig(`
+server:
+  api_key: gateway-secret
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+filters:
+  - type: redact
+    patterns: [email]
+`);
+    let upstreamBody: Record<string, unknown> | undefined;
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async (request) => {
+        upstreamBody = (await request.json()) as Record<string, unknown>;
+        return Response.json({ id: "ok", choices: [] });
+      },
+    });
+
+    const response = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer gateway-secret" },
+        body: JSON.stringify({
+          model: "fast",
+          messages: [{ role: "user", content: "contact jane@example.com" }],
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-tinyrouter-redactions")).toBe("1");
+    const messages = upstreamBody?.messages as Array<{ content: string }>;
+    expect(messages[0]?.content).toBe("contact [redacted:email]");
+  });
+
+  test("blocks filtered requests before any provider is called", async () => {
+    const config = parseConfig(`
+server:
+  api_key: gateway-secret
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+filters:
+  - type: block
+    patterns: [anthropic_api_key]
+`);
+    let upstreamCalls = 0;
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => {
+        upstreamCalls += 1;
+        return Response.json({ id: "ok", choices: [] });
+      },
+    });
+
+    const response = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer gateway-secret" },
+        body: JSON.stringify({
+          model: "fast",
+          messages: [{ role: "user", content: "my key is sk-ant-abc123def456" }],
+        }),
+      }),
+    );
+    const body = (await response.json()) as { error: { type: string; code?: string } };
+    expect(response.status).toBe(400);
+    expect(body.error.code).toBe("blocked_by_filter");
+    expect(upstreamCalls).toBe(0);
+  });
+
   test("returns an OpenAI-shaped validation error", async () => {
     const gateway = createTestGateway();
     const response = await gateway.fetch(
