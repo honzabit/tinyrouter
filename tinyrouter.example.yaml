@@ -28,8 +28,9 @@ providers:
   openai:
     type: openai
     api_key: ${OPENAI_API_KEY}
-    # Bounds the wait for response headers (and the full body for non-streaming
-    # calls). Streams that have started are never cut off mid-response.
+    # Bounds provider progress: this long for response headers, then this long
+    # again for each gap between body chunks. A slow model is fine; a silent
+    # provider is cut loose instead of hanging the client.
     timeout_ms: 60000
 
   anthropic:

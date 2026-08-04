@@ -3,6 +3,7 @@ import { GatewayError } from "./errors.ts";
 import { createFilterChain, filtersForProvider } from "./filters.ts";
 import type { Metrics } from "./metrics.ts";
 import type { ProviderAdapter } from "./providers/provider.ts";
+import { withStallTimeout } from "./sse.ts";
 import type { AttemptRecord, ChatCompletionRequest, ResolvedTarget, RoutedResponse } from "./types.ts";
 
 export type Fetch = (request: Request) => Promise<Response>;
@@ -54,6 +55,21 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
     const timer = setTimeout(finish, ms);
     signal.addEventListener("abort", finish, { once: true });
   });
+}
+
+// Applies to every response with a body, streaming or not: a passthrough
+// adapter hands back the upstream body unread, so a provider can stall
+// part-way through a plain JSON response just as easily as an SSE one.
+function watchStall(response: Response, timeoutMs: number, controller: AbortController): Response {
+  if (response.body === null) return response;
+  const sse = (response.headers.get("content-type") ?? "").startsWith("text/event-stream");
+  const body = withStallTimeout(
+    response.body,
+    timeoutMs,
+    () => controller.abort(new Error(`Provider sent no data for ${timeoutMs}ms.`)),
+    { sse },
+  );
+  return new Response(body, { status: response.status, headers: response.headers });
 }
 
 function splitTarget(target: string): ResolvedTarget {
@@ -211,6 +227,9 @@ export class Router {
               target.model,
             );
             clearTimeout(timer);
+            // The header timeout is done, but the body is still arriving:
+            // hold the provider to the same budget for every gap in it.
+            const served = watchStall(normalized, adapter.timeoutMs, controller);
             attempts.push({
               target: target.label,
               attempt: attemptNumber,
@@ -224,7 +243,7 @@ export class Router {
               model: target.model,
               status: String(upstreamResponse.status),
             });
-            return { response: normalized, target, attempts, redactions: filtered.redactions };
+            return { response: served, target, attempts, redactions: filtered.redactions };
           }
 
           clearTimeout(timer);

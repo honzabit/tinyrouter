@@ -375,6 +375,74 @@ filters:
   });
 });
 
+describe("stalled responses", () => {
+  const stallConfig = () =>
+    parseConfig(`
+providers:
+  only:
+    type: openai-compatible
+    base_url: https://only.test/v1
+    timeout_ms: 60
+routes:
+  smart: [only/model-a]
+`);
+
+  test("aborts a streaming response whose provider goes silent", async () => {
+    const config = stallConfig();
+    let upstreamAborted = false;
+    const router = new Router(config, createAdapters(config), new Metrics(), async (request) => {
+      // Headers arrive, then the provider sends one chunk and stops.
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: first\n\n"));
+        },
+      });
+      request.signal.addEventListener("abort", () => {
+        upstreamAborted = true;
+      });
+      return new Response(body, { headers: { "content-type": "text/event-stream" } });
+    });
+
+    const result = await router.route({ ...input, stream: true }, new AbortController().signal);
+    const text = await result.response.text();
+    expect(text).toStartWith("data: first\n\n");
+    expect(text).toContain("provider_timeout_error");
+    expect(upstreamAborted).toBe(true);
+  });
+
+  test("aborts a non-streaming response whose body never completes", async () => {
+    const config = stallConfig();
+    const router = new Router(config, createAdapters(config), new Metrics(), async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"id":"partial"'));
+        },
+      });
+      return new Response(body, { headers: { "content-type": "application/json" } });
+    });
+
+    const result = await router.route(input, new AbortController().signal);
+    // The body must end rather than hang; it is truncated, which the client
+    // sees as invalid JSON instead of an open connection forever.
+    const text = await result.response.text();
+    expect(text).toStartWith('{"id":"partial"');
+  });
+
+  test("leaves a healthy streaming response untouched", async () => {
+    const config = stallConfig();
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () =>
+        new Response("data: a\n\ndata: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } }),
+    );
+
+    const result = await router.route({ ...input, stream: true }, new AbortController().signal);
+    expect(await result.response.text()).toBe("data: a\n\ndata: [DONE]\n\n");
+  });
+});
+
 describe("filter blocking", () => {
   const blockConfig = (scope: string) =>
     parseConfig(`
