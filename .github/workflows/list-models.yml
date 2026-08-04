@@ -1,0 +1,19 @@
+name: List models
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gemini
+        run: |
+          curl -s -H "x-goog-api-key: $GEMINI_API_KEY" \
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200" \
+            | grep -o '"name": "models/[^"]*"' | sed 's/.*models\///;s/"//' | sort
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
