@@ -285,7 +285,7 @@ OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... bun run smoke
 SMOKE_LOCAL_BASE_URL=http://localhost:11434/v1 SMOKE_LOCAL_MODEL=qwen2.5:0.5b bun run smoke
 ```
 
-Providers without credentials are skipped, and the models are overridable via `SMOKE_OPENAI_MODEL`, `SMOKE_ANTHROPIC_MODEL`, and `SMOKE_GEMINI_MODEL`.
+Providers without credentials are skipped, and the models are overridable via `SMOKE_OPENAI_MODEL`, `SMOKE_ANTHROPIC_MODEL`, and `SMOKE_GEMINI_MODEL`. A check the provider rate limits is reported as skipped rather than failed, since a quota says nothing about the gateway; a run where every check was rate limited still fails, because it verified nothing.
 
 The Smoke workflow runs the same script on demand from the Actions tab, and the release workflow runs it as a gate. One job needs no secrets at all: it installs Ollama on the runner, pulls a small CPU model, and routes real inference through the gateway. The other exercises hosted providers using the `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` repository secrets — set whichever you want covered. Model IDs can be overridden per repository with `SMOKE_OPENAI_MODEL`, `SMOKE_ANTHROPIC_MODEL`, `SMOKE_GEMINI_MODEL`, and `OLLAMA_MODEL` Actions variables, so a provider retiring a model does not require a code change.
 

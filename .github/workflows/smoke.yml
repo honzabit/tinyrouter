@@ -3,7 +3,12 @@ name: Smoke
 on:
   workflow_dispatch:
   # Called by the release workflow, which gates publishing on these checks.
+  # It passes the ref being released so the gate tests exactly what ships.
   workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -24,6 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
@@ -52,6 +59,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14

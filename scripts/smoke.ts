@@ -34,6 +34,13 @@ interface Failure {
   message: string;
 }
 
+interface Outcome {
+  total: number;
+  passed: number;
+  failures: Failure[];
+  skipped: Failure[];
+}
+
 const GATEWAY_KEY = "smoke-secret";
 const PORT = Number(process.env.SMOKE_PORT ?? 8123);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -138,8 +145,13 @@ async function waitForReady(): Promise<void> {
   throw new Error(`Gateway did not become ready at ${BASE} within 30s.`);
 }
 
+// A provider quota means the check could not run, not that the gateway is
+// broken, so it is reported as skipped rather than failing a release.
+class RateLimited extends Error {}
+
 async function failedResponse(response: Response, check: string): Promise<Error> {
-  return new Error(`${check} returned HTTP ${response.status}: ${(await response.text()).slice(0, 400)}`);
+  const detail = `${check} returned HTTP ${response.status}: ${(await response.text()).slice(0, 400)}`;
+  return response.status === 429 ? new RateLimited(detail) : new Error(detail);
 }
 
 async function checkCompletion(target: SmokeTarget): Promise<void> {
@@ -234,19 +246,26 @@ async function checkToolCall(target: SmokeTarget): Promise<void> {
     throw new Error("tool call arguments are not a JSON object");
 }
 
-async function runTarget(target: SmokeTarget, failures: Failure[]): Promise<void> {
+async function runTarget(target: SmokeTarget, outcome: Outcome): Promise<void> {
   const checks: Array<[string, (target: SmokeTarget) => Promise<void>]> = [
     ["completion", checkCompletion],
     ["streaming", checkStreaming],
     ...(target.checkTools ? [["tool call", checkToolCall] as [string, typeof checkToolCall]] : []),
   ];
   for (const [name, check] of checks) {
+    outcome.total += 1;
     try {
       await check(target);
+      outcome.passed += 1;
       console.log(`ok   ${target.target} ${name}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      failures.push({ target: target.target, check: name, message });
+      if (error instanceof RateLimited) {
+        outcome.skipped.push({ target: target.target, check: name, message });
+        console.warn(`skip ${target.target} ${name}: rate limited by the provider`);
+        continue;
+      }
+      outcome.failures.push({ target: target.target, check: name, message });
       console.error(`FAIL ${target.target} ${name}: ${message}`);
     }
   }
@@ -283,11 +302,11 @@ const gateway = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "main.ts"),
   stderr: "inherit",
 });
 
-const failures: Failure[] = [];
+const outcome: Outcome = { total: 0, passed: 0, failures: [], skipped: [] };
 try {
   await waitForReady();
   for (const target of targets) {
-    await runTarget(target, failures);
+    await runTarget(target, outcome);
   }
 } finally {
   gateway.kill();
@@ -295,8 +314,20 @@ try {
   await rm(configDir, { recursive: true, force: true });
 }
 
-if (failures.length > 0) {
-  console.error(`\n${failures.length} smoke check(s) failed.`);
+if (outcome.failures.length > 0) {
+  console.error(`\n${outcome.failures.length} smoke check(s) failed.`);
   process.exit(1);
+}
+if (outcome.passed === 0) {
+  console.error(`\nEvery check was rate limited, so nothing was verified.`);
+  process.exit(1);
+}
+if (outcome.skipped.length > 0) {
+  console.warn(
+    `\n${outcome.passed}/${outcome.total} smoke checks passed; ` +
+      `${outcome.skipped.length} skipped because the provider rate limited them: ` +
+      `${[...new Set(outcome.skipped.map((s) => s.target))].join(", ")}.`,
+  );
+  process.exit(0);
 }
 console.log(`\nAll smoke checks passed for ${targets.length} target(s).`);
