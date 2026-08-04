@@ -21,6 +21,38 @@ It is intended to feel like **Caddy for LLM APIs**: one process, one configurati
 
 TinyRouter has no accounts, billing, credits, database, Redis, dashboard, semantic router, or background control plane.
 
+## When to use TinyRouter
+
+TinyRouter occupies a deliberate niche: deterministic model fallback behind one OpenAI-compatible endpoint, in a process small enough to read before you hand it your API keys.
+
+Use it when:
+
+- **You want to audit the thing that holds your keys.** A gateway sits between your provider credentials and every prompt you send. TinyRouter is roughly 2,200 lines of TypeScript (plus 800 of tests) with two runtime dependencies, `yaml` and `zod` — one person can read all of it in an evening.
+- **You refuse to run infrastructure for a proxy.** One process, one YAML file. No database, no Redis, no admin UI. Prometheus metrics are built in, and the compiled binary runs with nothing else installed.
+- **You run local models with cloud fallback.** Serve your own model first and fail over to a hosted one only when it is down or overloaded:
+
+  ```yaml
+  routes:
+    assistant:
+      - local/qwen3
+      - anthropic/claude-haiku-4-5
+  ```
+
+- **You need failover you can reason about.** The routing contract fits in a paragraph and never switches providers mid-stream. What triggers a retry is a configured status list, not a heuristic.
+- **Clients you don't control need one stable endpoint.** Open WebUI, LibreChat, editors, agents — anything that accepts an OpenAI base URL gets model aliases and failover with no code changes.
+
+Use something else when:
+
+| You need | Better fit |
+| --- | --- |
+| Budgets, virtual keys, per-user spend tracking, an admin UI | [LiteLLM](https://github.com/BerriAI/litellm) |
+| Guardrails, semantic caching, prompt management | [Portkey](https://github.com/Portkey-AI/gateway) |
+| A hosted gateway with nothing to operate | [OpenRouter](https://openrouter.ai), [Cloudflare AI Gateway](https://developers.cloudflare.com/ai-gateway/) |
+| A hundred providers out of the box | LiteLLM or a hosted gateway |
+| Provider switching inside one app whose code you control | An SDK such as the [AI SDK](https://ai-sdk.dev) — you may not need a proxy at all |
+
+Those are good projects, and TinyRouter is not trying to replace them. It exists for the case where the feature you want most is being able to understand the whole thing.
+
 ## Quick start
 
 You need [Bun](https://bun.sh/) 1.3.14 or later.
