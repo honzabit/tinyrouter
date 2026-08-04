@@ -1,15 +1,17 @@
+import type { JsonValue } from "type-fest";
+import { z } from "zod";
 import type { ProviderConfig } from "../config.ts";
 import { GatewayError } from "../errors.ts";
 import { formatSse, mapSseStream } from "../sse.ts";
-import type {
-  ChatCompletionRequest,
-  ChatMessage,
-  JsonObject,
-  OpenAITool,
-  OpenAIToolCall,
-} from "../types.ts";
+import type { ChatCompletionRequest, ChatMessage, JsonObject, OpenAIToolCall } from "../types.ts";
 import type { ProviderAdapter } from "./provider.ts";
-import { joinUrl, parseProviderError, responseHeaders } from "./provider.ts";
+import {
+  joinUrl,
+  parseDataUrl,
+  parseProviderError,
+  responseHeaders,
+  unsupportedContent,
+} from "./provider.ts";
 
 type GeminiProviderConfig = Extract<ProviderConfig, { type: "gemini" }>;
 
@@ -17,6 +19,38 @@ interface GeminiContent extends JsonObject {
   role: "user" | "model";
   parts: JsonObject[];
 }
+
+const usageMetadataSchema = z.looseObject({
+  promptTokenCount: z.number().nullish(),
+  candidatesTokenCount: z.number().nullish(),
+  totalTokenCount: z.number().nullish(),
+});
+
+const partSchema = z.looseObject({
+  text: z.string().nullish(),
+  functionCall: z
+    .looseObject({
+      name: z.string().nullish(),
+      args: z.unknown().optional(),
+    })
+    .nullish(),
+});
+
+const candidateSchema = z.looseObject({
+  index: z.number().nullish(),
+  content: z.looseObject({ parts: z.array(partSchema).nullish() }).nullish(),
+  finishReason: z.string().nullish(),
+});
+
+const responseSchema = z.looseObject({
+  responseId: z.string().nullish(),
+  modelVersion: z.string().nullish(),
+  candidates: z.array(candidateSchema).nullish(),
+  usageMetadata: usageMetadataSchema.nullish(),
+  error: z.looseObject({ message: z.string().nullish() }).nullish(),
+});
+
+type GeminiUsage = z.infer<typeof usageMetadataSchema>;
 
 function textFromContent(content: unknown): string {
   if (typeof content === "string") return content;
@@ -46,9 +80,42 @@ function appendContent(contents: GeminiContent[], content: GeminiContent): void 
   else contents.push(content);
 }
 
-function partsForOrdinaryMessage(message: ChatMessage): JsonObject[] {
-  const text = textFromContent(message.content);
-  return [{ text }];
+function partsForUserMessage(message: ChatMessage): JsonObject[] {
+  if (typeof message.content === "string") return [{ text: message.content }];
+  if (!Array.isArray(message.content)) return [{ text: "" }];
+
+  const parts: JsonObject[] = [];
+  for (const raw of message.content) {
+    if (raw === null || typeof raw !== "object") {
+      throw unsupportedContent("Message content parts must be objects.");
+    }
+    const part = raw as JsonObject;
+    if (part.type === "text" && typeof part.text === "string") {
+      parts.push({ text: part.text });
+      continue;
+    }
+    if (part.type === "image_url") {
+      const url =
+        part.image_url !== null && typeof part.image_url === "object"
+          ? (part.image_url as JsonObject).url
+          : undefined;
+      if (typeof url !== "string") {
+        throw unsupportedContent("Image content parts must contain an image_url object with a string url.");
+      }
+      const dataUrl = parseDataUrl(url);
+      if (dataUrl === undefined) {
+        throw unsupportedContent(
+          "Gemini providers accept images as base64-encoded data: URIs only; fetch the image and inline it.",
+        );
+      }
+      parts.push({ inlineData: { mimeType: dataUrl.mediaType, data: dataUrl.data } });
+      continue;
+    }
+    throw unsupportedContent(
+      `Content part type '${typeof part.type === "string" ? part.type : "unknown"}' is not supported for Gemini providers.`,
+    );
+  }
+  return parts.length > 0 ? parts : [{ text: "" }];
 }
 
 function convertMessages(input: ChatCompletionRequest): {
@@ -69,8 +136,8 @@ function convertMessages(input: ChatCompletionRequest): {
   for (const message of input.messages) {
     if (message.role === "system" || message.role === "developer") continue;
     if (message.role === "assistant") {
-      const parts = partsForOrdinaryMessage(message);
-      if (parts[0]?.text === "" && (message.tool_calls?.length ?? 0) > 0) parts.length = 0;
+      const text = textFromContent(message.content);
+      const parts: JsonObject[] = text === "" && (message.tool_calls?.length ?? 0) > 0 ? [] : [{ text }];
       for (const call of message.tool_calls ?? []) {
         parts.push({
           functionCall: {
@@ -97,7 +164,7 @@ function convertMessages(input: ChatCompletionRequest): {
       });
       continue;
     }
-    appendContent(contents, { role: "user", parts: partsForOrdinaryMessage(message) });
+    appendContent(contents, { role: "user", parts: partsForUserMessage(message) });
   }
 
   return {
@@ -106,21 +173,14 @@ function convertMessages(input: ChatCompletionRequest): {
   };
 }
 
-function convertTools(tools: unknown): JsonObject[] | undefined {
-  if (!Array.isArray(tools)) return undefined;
-  const declarations = tools.flatMap((raw): JsonObject[] => {
-    if (raw === null || typeof raw !== "object") return [];
-    const tool = raw as Partial<OpenAITool>;
-    if (tool.type !== "function" || tool.function === undefined) return [];
-    return [
-      {
-        name: tool.function.name,
-        ...(tool.function.description === undefined ? {} : { description: tool.function.description }),
-        parameters: tool.function.parameters ?? { type: "object", properties: {} },
-      },
-    ];
-  });
-  return declarations.length === 0 ? undefined : [{ functionDeclarations: declarations }];
+function convertTools(tools: ChatCompletionRequest["tools"]): JsonObject[] | undefined {
+  if (tools === undefined || tools.length === 0) return undefined;
+  const declarations = tools.map((tool) => ({
+    name: tool.function.name,
+    ...(tool.function.description === undefined ? {} : { description: tool.function.description }),
+    parameters: tool.function.parameters ?? { type: "object", properties: {} },
+  }));
+  return [{ functionDeclarations: declarations }];
 }
 
 function convertToolConfig(choice: unknown): JsonObject | undefined {
@@ -158,7 +218,11 @@ function generationConfig(input: ChatCompletionRequest): JsonObject | undefined 
     if (object.type === "json_object" || object.type === "json_schema") {
       config.responseMimeType = "application/json";
     }
-    if (object.type === "json_schema" && object.json_schema !== null && typeof object.json_schema === "object") {
+    if (
+      object.type === "json_schema" &&
+      object.json_schema !== null &&
+      typeof object.json_schema === "object"
+    ) {
       const schema = (object.json_schema as JsonObject).schema;
       if (schema !== undefined) config.responseJsonSchema = schema;
     }
@@ -180,8 +244,8 @@ function buildGeminiBody(input: ChatCompletionRequest): JsonObject {
   };
 }
 
-function geminiFinishReason(reason: unknown, hasTools: boolean): string | null {
-  if (hasTools && (reason === "STOP" || reason === undefined)) return "tool_calls";
+function geminiFinishReason(reason: string | null | undefined, hasTools: boolean): string | null {
+  if (hasTools && (reason === "STOP" || reason == null)) return "tool_calls";
   switch (reason) {
     case "STOP":
       return "stop";
@@ -194,72 +258,60 @@ function geminiFinishReason(reason: unknown, hasTools: boolean): string | null {
     case "SPII":
       return "content_filter";
     default:
-      return reason === undefined ? null : "stop";
+      return reason == null ? null : "stop";
   }
 }
 
-function usageFromGemini(value: JsonObject): JsonObject {
-  const usage = value.usageMetadata !== null && typeof value.usageMetadata === "object"
-    ? (value.usageMetadata as JsonObject)
-    : {};
-  const prompt = typeof usage.promptTokenCount === "number" ? usage.promptTokenCount : 0;
-  const completion = typeof usage.candidatesTokenCount === "number" ? usage.candidatesTokenCount : 0;
-  const total = typeof usage.totalTokenCount === "number" ? usage.totalTokenCount : prompt + completion;
+function usageFromGemini(usage: GeminiUsage | null | undefined): JsonObject {
+  const prompt = usage?.promptTokenCount ?? 0;
+  const completion = usage?.candidatesTokenCount ?? 0;
+  const total = usage?.totalTokenCount ?? prompt + completion;
   return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total };
 }
 
-function candidateParts(candidate: JsonObject): JsonObject[] {
-  const content = candidate.content;
-  if (content === null || typeof content !== "object") return [];
-  const parts = (content as JsonObject).parts;
-  return Array.isArray(parts)
-    ? parts.filter((part): part is JsonObject => part !== null && typeof part === "object")
-    : [];
-}
-
-function normalizeGeminiJson(value: JsonObject, fallbackModel: string): JsonObject {
-  const rawCandidates = Array.isArray(value.candidates) ? value.candidates : [];
-  const choices = rawCandidates.flatMap((raw, candidateIndex): JsonObject[] => {
-    if (raw === null || typeof raw !== "object") return [];
-    const candidate = raw as JsonObject;
-    const parts = candidateParts(candidate);
-    const text = parts
-      .filter((part) => typeof part.text === "string")
-      .map((part) => part.text as string)
-      .join("");
+function normalizeGeminiJson(providerId: string, value: unknown, fallbackModel: string): JsonObject {
+  const parsed = responseSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new GatewayError({
+      message: `Provider '${providerId}' returned an unexpected response body.`,
+      status: 502,
+      type: "provider_error",
+      retryable: true,
+    });
+  }
+  const responseId = parsed.data.responseId;
+  const choices = (parsed.data.candidates ?? []).map((candidate, candidateIndex) => {
+    const parts = candidate.content?.parts ?? [];
+    const text = parts.flatMap((part) => (typeof part.text === "string" ? [part.text] : [])).join("");
     const toolCalls: OpenAIToolCall[] = parts.flatMap((part, partIndex): OpenAIToolCall[] => {
       const call = part.functionCall;
-      if (call === null || typeof call !== "object") return [];
-      const object = call as JsonObject;
-      if (typeof object.name !== "string") return [];
+      if (call?.name == null) return [];
       return [
         {
-          id: `call_${String(value.responseId ?? crypto.randomUUID())}_${candidateIndex}_${partIndex}`,
+          id: `call_${responseId ?? crypto.randomUUID()}_${candidateIndex}_${partIndex}`,
           type: "function",
-          function: { name: object.name, arguments: JSON.stringify(object.args ?? {}) },
+          function: { name: call.name, arguments: JSON.stringify(call.args ?? {}) },
         },
       ];
     });
-    return [
-      {
-        index: typeof candidate.index === "number" ? candidate.index : candidateIndex,
-        message: {
-          role: "assistant",
-          content: text === "" && toolCalls.length > 0 ? null : text,
-          ...(toolCalls.length === 0 ? {} : { tool_calls: toolCalls }),
-        },
-        finish_reason: geminiFinishReason(candidate.finishReason, toolCalls.length > 0),
+    return {
+      index: candidate.index ?? candidateIndex,
+      message: {
+        role: "assistant",
+        content: text === "" && toolCalls.length > 0 ? null : text,
+        ...(toolCalls.length === 0 ? {} : { tool_calls: toolCalls }),
       },
-    ];
+      finish_reason: geminiFinishReason(candidate.finishReason, toolCalls.length > 0),
+    };
   });
 
   return {
-    id: typeof value.responseId === "string" ? value.responseId : `chatcmpl-${crypto.randomUUID()}`,
+    id: responseId ?? `chatcmpl-${crypto.randomUUID()}`,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
-    model: typeof value.modelVersion === "string" ? value.modelVersion : fallbackModel,
+    model: parsed.data.modelVersion ?? fallbackModel,
     choices,
-    usage: usageFromGemini(value),
+    usage: usageFromGemini(parsed.data.usageMetadata),
   };
 }
 
@@ -274,87 +326,98 @@ function geminiStream(
   let sentRole = false;
   let done = false;
   let toolIndex = 0;
+  let usage: JsonObject | undefined;
 
-  const chunk = (delta: JsonObject, reason: string | null = null, usage?: JsonObject): Uint8Array =>
+  const chunk = (delta: { [key: string]: JsonValue }, reason: string | null = null): Uint8Array =>
     formatSse({
       id,
       object: "chat.completion.chunk",
       created,
       model,
       choices: [{ index: 0, delta, finish_reason: reason }],
-      ...(usage === undefined ? {} : { usage }),
     });
+
+  // OpenAI convention: with include_usage, usage arrives in a dedicated final
+  // chunk whose choices array is empty, immediately before [DONE].
+  const finalChunks = (): Uint8Array[] => {
+    const output: Uint8Array[] = [];
+    if (includeUsage) {
+      output.push(
+        formatSse({
+          id,
+          object: "chat.completion.chunk",
+          created,
+          model,
+          choices: [],
+          usage: (usage ?? usageFromGemini(undefined)) as JsonValue,
+        }),
+      );
+    }
+    output.push(formatSse("[DONE]"));
+    return output;
+  };
 
   return mapSseStream(
     source,
     (event) => {
       if (event.data === "[DONE]") {
         done = true;
-        return [formatSse("[DONE]")];
+        return finalChunks();
       }
-      let value: JsonObject;
+      let raw: unknown;
       try {
-        value = JSON.parse(event.data) as JsonObject;
+        raw = JSON.parse(event.data);
       } catch {
         return [];
       }
-      if (value.error !== undefined) {
+      const parsed = responseSchema.safeParse(raw);
+      if (!parsed.success) return [];
+      const value = parsed.data;
+      if (value.error != null) {
         done = true;
-        const error = value.error as JsonObject;
         return [
           formatSse({
             error: {
-              message: typeof error.message === "string" ? error.message : "Gemini stream failed.",
+              message: value.error.message ?? "Gemini stream failed.",
               type: "provider_error",
             },
           }),
           formatSse("[DONE]"),
         ];
       }
-      if (typeof value.responseId === "string") id = value.responseId;
-      if (typeof value.modelVersion === "string") model = value.modelVersion;
+      id = value.responseId ?? id;
+      model = value.modelVersion ?? model;
+      if (value.usageMetadata != null) usage = usageFromGemini(value.usageMetadata);
       const output: Uint8Array[] = [];
       if (!sentRole) {
         sentRole = true;
         output.push(chunk({ role: "assistant", content: "" }));
       }
-      const candidates = Array.isArray(value.candidates) ? value.candidates : [];
-      const candidate = candidates[0];
-      if (candidate !== null && typeof candidate === "object") {
-        const object = candidate as JsonObject;
-        const parts = candidateParts(object);
+      const candidate = (value.candidates ?? [])[0];
+      if (candidate !== undefined) {
         let hasTools = false;
-        for (const part of parts) {
+        for (const part of candidate.content?.parts ?? []) {
           if (typeof part.text === "string" && part.text !== "") output.push(chunk({ content: part.text }));
-          const rawCall = part.functionCall;
-          if (rawCall !== null && typeof rawCall === "object") {
-            const call = rawCall as JsonObject;
-            if (typeof call.name === "string") {
-              hasTools = true;
-              output.push(
-                chunk({
-                  tool_calls: [
-                    {
-                      index: toolIndex,
-                      id: `call_${id}_${toolIndex}`,
-                      type: "function",
-                      function: { name: call.name, arguments: JSON.stringify(call.args ?? {}) },
-                    },
-                  ],
-                }),
-              );
-              toolIndex += 1;
-            }
+          const call = part.functionCall;
+          if (call?.name != null) {
+            hasTools = true;
+            output.push(
+              chunk({
+                tool_calls: [
+                  {
+                    index: toolIndex,
+                    id: `call_${id}_${toolIndex}`,
+                    type: "function",
+                    function: { name: call.name, arguments: JSON.stringify(call.args ?? {}) },
+                  },
+                ],
+              }),
+            );
+            toolIndex += 1;
           }
         }
-        if (object.finishReason !== undefined) {
-          output.push(
-            chunk(
-              {},
-              geminiFinishReason(object.finishReason, hasTools),
-              includeUsage ? usageFromGemini(value) : undefined,
-            ),
-          );
+        if (candidate.finishReason != null) {
+          output.push(chunk({}, geminiFinishReason(candidate.finishReason, hasTools)));
         }
       }
       return output;
@@ -362,7 +425,7 @@ function geminiStream(
     () => {
       if (done) return [];
       done = true;
-      return [formatSse("[DONE]")];
+      return finalChunks();
     },
   );
 }
@@ -403,15 +466,26 @@ export class GeminiAdapter implements ProviderAdapter {
           message: `Provider '${this.id}' returned an empty stream.`,
           status: 502,
           type: "provider_error",
+          retryable: true,
         });
       }
-      const streamOptions = input.stream_options as JsonObject | undefined;
-      return new Response(geminiStream(response.body, model, streamOptions?.include_usage === true), {
+      return new Response(geminiStream(response.body, model, input.stream_options?.include_usage === true), {
         headers: responseHeaders("text/event-stream; charset=utf-8", response.headers),
       });
     }
-    const body = (await response.json()) as JsonObject;
-    return Response.json(normalizeGeminiJson(body, model), {
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch (error) {
+      throw new GatewayError({
+        message: `Provider '${this.id}' returned a response that is not valid JSON.`,
+        status: 502,
+        type: "provider_error",
+        retryable: true,
+        cause: error,
+      });
+    }
+    return Response.json(normalizeGeminiJson(this.id, body, model), {
       headers: responseHeaders("application/json", response.headers),
     });
   }

@@ -4,6 +4,8 @@ import { jsonLogger } from "./logger.ts";
 import { createGateway } from "./server.ts";
 
 const VERSION = "0.1.0";
+const SHUTDOWN_GRACE_MS = 10_000;
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
 interface CliOptions {
   configPath: string;
@@ -66,6 +68,16 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  if (config.server.api_key === undefined && !LOOPBACK_HOSTS.has(config.server.host)) {
+    jsonLogger.log({
+      level: "warn",
+      event: "server_unauthenticated",
+      host: config.server.host,
+      message:
+        "server.api_key is not set and the host is not loopback; /v1 endpoints are open to anyone who can reach this address.",
+    });
+  }
+
   const gateway = createGateway(config);
   const server = Bun.serve({
     hostname: config.server.host,
@@ -84,7 +96,15 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 
   const shutdown = (signal: string) => {
     jsonLogger.log({ level: "info", event: "server_stopping", signal });
-    void server.stop(true).then(() => process.exit(0));
+    // Drain in-flight requests (including streams); force-close after the grace period.
+    const force = setTimeout(() => {
+      jsonLogger.log({ level: "warn", event: "server_force_stopped", grace_ms: SHUTDOWN_GRACE_MS });
+      void server.stop(true).then(() => process.exit(0));
+    }, SHUTDOWN_GRACE_MS);
+    void server.stop(false).then(() => {
+      clearTimeout(force);
+      process.exit(0);
+    });
   };
   process.once("SIGINT", () => shutdown("SIGINT"));
   process.once("SIGTERM", () => shutdown("SIGTERM"));

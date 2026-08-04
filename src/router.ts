@@ -2,14 +2,9 @@ import type { TinyRouterConfig } from "./config.ts";
 import { GatewayError } from "./errors.ts";
 import type { Metrics } from "./metrics.ts";
 import type { ProviderAdapter } from "./providers/provider.ts";
-import type {
-  AttemptRecord,
-  ChatCompletionRequest,
-  ResolvedTarget,
-  RoutedResponse,
-} from "./types.ts";
+import type { AttemptRecord, ChatCompletionRequest, ResolvedTarget, RoutedResponse } from "./types.ts";
 
-export type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+export type Fetch = (request: Request) => Promise<Response>;
 
 function splitTarget(target: string): ResolvedTarget {
   const slash = target.indexOf("/");
@@ -20,10 +15,7 @@ function splitTarget(target: string): ResolvedTarget {
   };
 }
 
-function attemptOutcome(options: {
-  canRetry: boolean;
-  hasFallback: boolean;
-}): AttemptRecord["outcome"] {
+function attemptOutcome(options: { canRetry: boolean; hasFallback: boolean }): AttemptRecord["outcome"] {
   if (options.canRetry) return "retry";
   if (options.hasFallback) return "fallback";
   return "error";
@@ -36,7 +28,8 @@ function failureWithAttempts(error: GatewayError, attempts: AttemptRecord[]): Ga
     type: error.type,
     ...(error.code === undefined ? {} : { code: error.code }),
     retryable: error.retryable,
-    details: { upstream: error.details, attempts },
+    ...(error.details === undefined ? {} : { details: error.details }),
+    attempts,
     cause: error,
   });
 }
@@ -103,7 +96,8 @@ export class Router {
         let timedOut = false;
         const controller = new AbortController();
         if (callerSignal.aborted) controller.abort(callerSignal.reason);
-        else callerSignal.addEventListener("abort", () => controller.abort(callerSignal.reason), { once: true });
+        else
+          callerSignal.addEventListener("abort", () => controller.abort(callerSignal.reason), { once: true });
         const timer = setTimeout(() => {
           timedOut = true;
           controller.abort(new Error(`Provider response timeout after ${adapter.timeoutMs}ms.`));
@@ -136,7 +130,10 @@ export class Router {
           const error = await adapter.parseError(upstreamResponse);
           lastError = error;
           const canMove = this.config.routing.retry_statuses.includes(upstreamResponse.status);
-          const outcome = attemptOutcome({ canRetry: canMove && hasRetry, hasFallback: canMove && hasFallback });
+          const outcome = attemptOutcome({
+            canRetry: canMove && hasRetry,
+            hasFallback: canMove && hasFallback,
+          });
           attempts.push({
             target: target.label,
             attempt: attemptNumber,
@@ -155,7 +152,7 @@ export class Router {
           break;
         } catch (caught) {
           clearTimeout(timer);
-          if (caught instanceof GatewayError && caught.details !== undefined) throw caught;
+          if (caught instanceof GatewayError && caught.attempts !== undefined) throw caught;
           const durationMs = Math.round(performance.now() - startedAt);
           const error =
             caught instanceof GatewayError
@@ -170,7 +167,11 @@ export class Router {
                   cause: caught,
                 });
           lastError = error;
-          const outcome = attemptOutcome({ canRetry: hasRetry, hasFallback });
+          const canMove = error.retryable;
+          const outcome = attemptOutcome({
+            canRetry: canMove && hasRetry,
+            hasFallback: canMove && hasFallback,
+          });
           attempts.push({
             target: target.label,
             attempt: attemptNumber,
@@ -181,8 +182,13 @@ export class Router {
           this.metrics.attempt({
             provider: target.providerId,
             model: target.model,
-            status: timedOut ? "timeout" : "network_error",
+            status: timedOut
+              ? "timeout"
+              : caught instanceof GatewayError
+                ? String(error.status)
+                : "network_error",
           });
+          if (!canMove) throw failureWithAttempts(error, attempts);
           if (hasRetry) continue;
           break;
         }

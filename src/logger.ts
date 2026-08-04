@@ -1,4 +1,4 @@
-export interface LogRecord {
+interface LogRecord {
   level: "info" | "warn" | "error";
   event: string;
   [key: string]: unknown;

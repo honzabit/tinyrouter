@@ -12,6 +12,8 @@ providers:
   openai:
     type: openai
     api_key: ${OPENAI_API_KEY}
+    # Bounds the wait for response headers (and the full body for non-streaming
+    # calls). Streams that have started are never cut off mid-response.
     timeout_ms: 60000
 
   anthropic:

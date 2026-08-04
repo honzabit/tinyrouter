@@ -1,0 +1,60 @@
+name: Smoke
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  SMOKE_OPENAI_MODEL: gpt-5-mini
+  SMOKE_ANTHROPIC_MODEL: claude-haiku-4-5
+  SMOKE_GEMINI_MODEL: gemini-3-flash
+  OLLAMA_MODEL: qwen2.5:0.5b
+
+jobs:
+  local-model:
+    name: Local model via Ollama (no secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Install and start Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          (ollama serve > /tmp/ollama.log 2>&1 &)
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:11434/api/version > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:11434/api/version > /dev/null || (cat /tmp/ollama.log; exit 1)
+      - name: Pull and warm the model
+        run: |
+          ollama pull "$OLLAMA_MODEL"
+          ollama run "$OLLAMA_MODEL" "Reply with exactly one word: pong"
+      - name: Run smoke test
+        run: bun run smoke
+        env:
+          SMOKE_LOCAL_BASE_URL: http://127.0.0.1:11434/v1
+          SMOKE_LOCAL_MODEL: ${{ env.OLLAMA_MODEL }}
+
+  providers:
+    name: Hosted providers (repository secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Run smoke test
+        run: bun run smoke
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

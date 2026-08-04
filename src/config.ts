@@ -45,30 +45,29 @@ const rawConfigSchema = z.object({
       host: z.string().default("0.0.0.0"),
       port: z.number().int().min(1).max(65_535).default(8080),
       api_key: z.string().min(1).optional(),
-      max_body_bytes: z.number().int().positive().default(10 * 1024 * 1024),
+      max_body_bytes: z
+        .number()
+        .int()
+        .positive()
+        .default(10 * 1024 * 1024),
       idle_timeout_seconds: z.number().int().min(0).max(255).default(0),
     })
-    .default({
-      host: "0.0.0.0",
-      port: 8080,
-      max_body_bytes: 10 * 1024 * 1024,
-      idle_timeout_seconds: 0,
-    }),
+    .prefault({}),
   routing: z
     .object({
       retries: z.number().int().min(0).max(3).default(0),
-      retry_statuses: z
-        .array(z.number().int().min(400).max(599))
-        .default([429, 500, 502, 503, 504]),
+      retry_statuses: z.array(z.number().int().min(400).max(599)).default([429, 500, 502, 503, 504]),
     })
-    .default({ retries: 0, retry_statuses: [429, 500, 502, 503, 504] }),
-  providers: z.record(z.string().regex(identifier), providerSchema).refine(
-    (providers) => Object.keys(providers).length > 0,
-    "At least one provider is required.",
-  ),
+    .prefault({}),
+  providers: z
+    .record(z.string().regex(identifier), providerSchema)
+    .refine((providers) => Object.keys(providers).length > 0, "At least one provider is required."),
   routes: z
     .record(
-      z.string().regex(identifier).refine((name) => !name.includes("/"), "Route aliases cannot contain '/'."),
+      z
+        .string()
+        .regex(identifier)
+        .refine((name) => !name.includes("/"), "Route aliases cannot contain '/'."),
       z.array(z.string().min(3).max(512)).min(1),
     )
     .default({}),
@@ -85,12 +84,15 @@ export class ConfigError extends Error {
 }
 
 function expandString(value: string, environment: Record<string, string | undefined>): string {
-  return value.replace(/\$\{([A-Z_][A-Z0-9_]*)(?::-(.*?))?\}/g, (_, name: string, fallback: string | undefined) => {
-    const resolved = environment[name];
-    if (resolved !== undefined && resolved !== "") return resolved;
-    if (fallback !== undefined) return fallback;
-    throw new ConfigError(`Environment variable ${name} is required by the configuration.`);
-  });
+  return value.replace(
+    /\$\{([A-Z_][A-Z0-9_]*)(?::-(.*?))?\}/g,
+    (_, name: string, fallback: string | undefined) => {
+      const resolved = environment[name];
+      if (resolved !== undefined && resolved !== "") return resolved;
+      if (fallback !== undefined) return fallback;
+      throw new ConfigError(`Environment variable ${name} is required by the configuration.`);
+    },
+  );
 }
 
 function expandEnvironment(value: unknown, environment: Record<string, string | undefined>): unknown {
@@ -166,7 +168,12 @@ export function redactConfig(config: TinyRouterConfig): unknown {
     providers: Object.fromEntries(
       Object.entries(config.providers).map(([id, provider]) => [
         id,
-        { ...provider, ...(provider.api_key === undefined ? {} : { api_key: "[redacted]" }) },
+        {
+          ...provider,
+          ...(provider.api_key === undefined ? {} : { api_key: "[redacted]" }),
+          // Header values routinely carry credentials (Authorization, x-api-key, ...).
+          headers: Object.fromEntries(Object.keys(provider.headers).map((name) => [name, "[redacted]"])),
+        },
       ]),
     ),
   };

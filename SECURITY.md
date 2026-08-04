@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Please do not open a public issue for a suspected vulnerability. Contact the repository maintainer privately using the security contact published with the repository.
+Please do not open a public issue for a suspected vulnerability. Use GitHub's private vulnerability reporting instead: open the repository's **Security** tab and choose **Report a vulnerability**. Reports are acknowledged on a best-effort basis; this is a volunteer-maintained project.
 
 ## Security boundaries
 

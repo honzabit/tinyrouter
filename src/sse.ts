@@ -1,12 +1,16 @@
+import type { JsonValue } from "type-fest";
+
 export interface SseEvent {
   event?: string;
   data: string;
 }
 
-export function formatSse(data: unknown, event?: string): Uint8Array {
+const encoder = new TextEncoder();
+
+export function formatSse(data: JsonValue, event?: string): Uint8Array {
   const prefix = event === undefined ? "" : `event: ${event}\n`;
   const payload = typeof data === "string" ? data : JSON.stringify(data);
-  return new TextEncoder().encode(`${prefix}data: ${payload}\n\n`);
+  return encoder.encode(`${prefix}data: ${payload}\n\n`);
 }
 
 export function mapSseStream(

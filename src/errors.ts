@@ -1,4 +1,8 @@
+import type { JsonValue } from "type-fest";
+import type { AttemptRecord } from "./types.ts";
+
 export type ErrorType =
+  | "api_error"
   | "authentication_error"
   | "invalid_request_error"
   | "model_not_found"
@@ -13,7 +17,8 @@ export class GatewayError extends Error {
   readonly type: ErrorType;
   readonly code?: string;
   readonly retryable: boolean;
-  readonly details?: unknown;
+  readonly details?: JsonValue;
+  readonly attempts?: AttemptRecord[];
 
   constructor(options: {
     message: string;
@@ -21,7 +26,8 @@ export class GatewayError extends Error {
     type: ErrorType;
     code?: string;
     retryable?: boolean;
-    details?: unknown;
+    details?: JsonValue;
+    attempts?: AttemptRecord[];
     cause?: unknown;
   }) {
     super(options.message, options.cause === undefined ? undefined : { cause: options.cause });
@@ -31,6 +37,7 @@ export class GatewayError extends Error {
     this.retryable = options.retryable ?? false;
     if (options.code !== undefined) this.code = options.code;
     if (options.details !== undefined) this.details = options.details;
+    if (options.attempts !== undefined) this.attempts = options.attempts;
   }
 }
 
@@ -58,7 +65,7 @@ export function unknownErrorResponse(requestId: string): Response {
     new GatewayError({
       message: "An unexpected gateway error occurred.",
       status: 500,
-      type: "provider_error",
+      type: "api_error",
     }),
     requestId,
   );

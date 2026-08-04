@@ -1,50 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
-import { z } from "zod";
 import type { TinyRouterConfig } from "./config.ts";
 import { errorResponse, GatewayError, unknownErrorResponse } from "./errors.ts";
 import type { Logger } from "./logger.ts";
 import { jsonLogger } from "./logger.ts";
 import { Metrics } from "./metrics.ts";
 import { createAdapters } from "./providers/index.ts";
-import { Router, type Fetch } from "./router.ts";
-import type { AttemptRecord, ChatCompletionRequest } from "./types.ts";
-
-const toolCallSchema = z.object({
-  id: z.string().min(1),
-  type: z.literal("function"),
-  function: z.object({
-    name: z.string().min(1),
-    arguments: z.string(),
-  }),
-});
-
-const toolSchema = z.object({
-  type: z.literal("function"),
-  function: z.object({
-    name: z.string().min(1),
-    description: z.string().optional(),
-    parameters: z.record(z.string(), z.unknown()).optional(),
-  }),
-});
-
-const messageSchema = z
-  .object({
-    role: z.enum(["system", "developer", "user", "assistant", "tool"]),
-    content: z.unknown().optional(),
-    name: z.string().optional(),
-    tool_call_id: z.string().optional(),
-    tool_calls: z.array(toolCallSchema).optional(),
-  })
-  .passthrough();
-
-const chatRequestSchema = z
-  .object({
-    model: z.string().min(1).max(512),
-    messages: z.array(messageSchema).min(1),
-    stream: z.boolean().optional(),
-    tools: z.array(toolSchema).optional(),
-  })
-  .passthrough();
+import { type Fetch, Router } from "./router.ts";
+import { chatRequestSchema } from "./types.ts";
 
 function authorized(request: Request, expected: string | undefined): boolean {
   if (expected === undefined) return true;
@@ -57,36 +19,46 @@ function authorized(request: Request, expected: string | undefined): boolean {
 
 function requestId(request: Request): string {
   const supplied = request.headers.get("x-request-id");
-  return supplied !== null && supplied.length > 0 && supplied.length <= 128
-    ? supplied
-    : crypto.randomUUID();
+  return supplied !== null && supplied.length > 0 && supplied.length <= 128 ? supplied : crypto.randomUUID();
 }
 
-function detailsAttempts(error: GatewayError): AttemptRecord[] | undefined {
-  if (error.details === null || typeof error.details !== "object") return undefined;
-  const attempts = (error.details as Record<string, unknown>).attempts;
-  return Array.isArray(attempts) ? (attempts as AttemptRecord[]) : undefined;
+function bodyTooLarge(maxBytes: number): GatewayError {
+  return new GatewayError({
+    message: `Request body exceeds the ${maxBytes}-byte limit.`,
+    status: 413,
+    type: "invalid_request_error",
+    code: "body_too_large",
+  });
 }
 
 async function readBody(request: Request, maxBytes: number): Promise<unknown> {
   const declaredLength = request.headers.get("content-length");
   if (declaredLength !== null && Number(declaredLength) > maxBytes) {
-    throw new GatewayError({
-      message: `Request body exceeds the ${maxBytes}-byte limit.`,
-      status: 413,
-      type: "invalid_request_error",
-      code: "body_too_large",
-    });
+    throw bodyTooLarge(maxBytes);
   }
-  const text = await request.text();
-  if (new TextEncoder().encode(text).byteLength > maxBytes) {
-    throw new GatewayError({
-      message: `Request body exceeds the ${maxBytes}-byte limit.`,
-      status: 413,
-      type: "invalid_request_error",
-      code: "body_too_large",
-    });
+
+  // Enforce the limit while reading so a chunked body cannot buffer unbounded.
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (request.body !== null) {
+    const reader = request.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel(new Error("Request body too large."));
+          throw bodyTooLarge(maxBytes);
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
   }
+
+  const text = Buffer.concat(chunks).toString("utf8");
   try {
     return JSON.parse(text) as unknown;
   } catch (error) {
@@ -189,7 +161,7 @@ export function createGateway(
           code: "invalid_request",
         });
       }
-      const input = parsed.data as ChatCompletionRequest;
+      const input = parsed.data;
       metricModel = input.model;
       const result = await router.route(input, request.signal);
       metricProvider = result.target.providerId;
@@ -222,7 +194,7 @@ export function createGateway(
           status: error.status,
           error_type: error.type,
           duration_ms: Math.round(performance.now() - startedAt),
-          attempts: detailsAttempts(error),
+          attempts: error.attempts,
         });
         return errorResponse(error, id);
       }

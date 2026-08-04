@@ -3,7 +3,7 @@ import { parseConfig } from "../src/config.ts";
 import { GatewayError } from "../src/errors.ts";
 import { Metrics } from "../src/metrics.ts";
 import { createAdapters } from "../src/providers/index.ts";
-import { Router, type Fetch } from "../src/router.ts";
+import { type Fetch, Router } from "../src/router.ts";
 import type { ChatCompletionRequest } from "../src/types.ts";
 
 const input: ChatCompletionRequest = {
@@ -33,8 +33,7 @@ routes:
 describe("router", () => {
   test("falls back in configured order on a retryable response", async () => {
     const calls: Array<{ url: string; authorization: string | null; model: unknown }> = [];
-    const router = routerWith(async (requestInfo) => {
-      const request = requestInfo as Request;
+    const router = routerWith(async (request) => {
       const body = (await request.json()) as Record<string, unknown>;
       calls.push({
         url: request.url,
@@ -139,8 +138,7 @@ providers:
 routes:
   smart: [slow/model-a, backup/model-b]
 `);
-    const router = new Router(config, createAdapters(config), new Metrics(), async (requestInfo) => {
-      const request = requestInfo as Request;
+    const router = new Router(config, createAdapters(config), new Metrics(), async (request) => {
       if (new URL(request.url).hostname === "slow.test") {
         return new Promise<Response>((_resolve, reject) => {
           request.signal.addEventListener("abort", () => reject(request.signal.reason), { once: true });

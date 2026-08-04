@@ -1,3 +1,4 @@
+import type { JsonValue } from "type-fest";
 import type { ProviderConfig } from "../config.ts";
 import { GatewayError } from "../errors.ts";
 import type { ChatCompletionRequest } from "../types.ts";
@@ -7,16 +8,31 @@ export interface ProviderAdapter {
   readonly type: ProviderConfig["type"];
   readonly timeoutMs: number;
   createRequest(input: ChatCompletionRequest, model: string, signal: AbortSignal): Request;
-  normalizeResponse(
-    response: Response,
-    input: ChatCompletionRequest,
-    model: string,
-  ): Promise<Response>;
+  normalizeResponse(response: Response, input: ChatCompletionRequest, model: string): Promise<Response>;
   parseError(response: Response): Promise<GatewayError>;
 }
 
 export function joinUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+}
+
+export function parseDataUrl(url: string): { mediaType: string; data: string } | undefined {
+  const match = /^data:([^,]*);base64,(.*)$/s.exec(url);
+  if (match === null) return undefined;
+  const mediaType = (match[1] ?? "").split(";")[0];
+  return {
+    mediaType: mediaType === "" || mediaType === undefined ? "application/octet-stream" : mediaType,
+    data: match[2] ?? "",
+  };
+}
+
+export function unsupportedContent(message: string): GatewayError {
+  return new GatewayError({
+    message,
+    status: 400,
+    type: "invalid_request_error",
+    code: "unsupported_content",
+  });
 }
 
 function findErrorMessage(value: unknown): string | undefined {
@@ -28,15 +44,12 @@ function findErrorMessage(value: unknown): string | undefined {
   return undefined;
 }
 
-export async function parseProviderError(
-  response: Response,
-  providerId: string,
-): Promise<GatewayError> {
-  let body: unknown;
+export async function parseProviderError(response: Response, providerId: string): Promise<GatewayError> {
+  let body: JsonValue | undefined;
   try {
     const text = await response.text();
     try {
-      body = JSON.parse(text) as unknown;
+      body = JSON.parse(text) as JsonValue;
     } catch {
       body = text;
     }
@@ -44,6 +57,7 @@ export async function parseProviderError(
     body = undefined;
   }
 
+  const details = body === undefined ? {} : { details: body };
   const upstreamMessage = findErrorMessage(body);
   const status = response.status;
   if (status === 401 || status === 403) {
@@ -52,7 +66,7 @@ export async function parseProviderError(
       status: 502,
       type: "provider_authentication_error",
       code: String(status),
-      details: body,
+      ...details,
     });
   }
   if (status === 429) {
@@ -62,7 +76,7 @@ export async function parseProviderError(
       type: "provider_rate_limit_error",
       code: "429",
       retryable: true,
-      details: body,
+      ...details,
     });
   }
   if (status >= 400 && status < 500) {
@@ -71,7 +85,7 @@ export async function parseProviderError(
       status,
       type: "invalid_request_error",
       code: String(status),
-      details: body,
+      ...details,
     });
   }
   return new GatewayError({
@@ -80,7 +94,7 @@ export async function parseProviderError(
     type: status === 503 ? "service_unavailable" : "provider_error",
     code: String(status),
     retryable: status >= 500,
-    details: body,
+    ...details,
   });
 }
 

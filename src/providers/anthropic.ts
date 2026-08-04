@@ -1,15 +1,17 @@
+import type { JsonValue } from "type-fest";
+import { z } from "zod";
 import type { ProviderConfig } from "../config.ts";
 import { GatewayError } from "../errors.ts";
 import { formatSse, mapSseStream } from "../sse.ts";
-import type {
-  ChatCompletionRequest,
-  ChatMessage,
-  JsonObject,
-  OpenAITool,
-  OpenAIToolCall,
-} from "../types.ts";
+import type { ChatCompletionRequest, ChatMessage, JsonObject, OpenAIToolCall } from "../types.ts";
 import type { ProviderAdapter } from "./provider.ts";
-import { joinUrl, parseProviderError, responseHeaders } from "./provider.ts";
+import {
+  joinUrl,
+  parseDataUrl,
+  parseProviderError,
+  responseHeaders,
+  unsupportedContent,
+} from "./provider.ts";
 
 type AnthropicProviderConfig = Extract<ProviderConfig, { type: "anthropic" }>;
 
@@ -21,6 +23,58 @@ interface AnthropicMessage {
   role: "user" | "assistant";
   content: AnthropicBlock[];
 }
+
+const usageSchema = z.looseObject({
+  input_tokens: z.number().nullish(),
+  output_tokens: z.number().nullish(),
+});
+
+const responseSchema = z.looseObject({
+  id: z.string().nullish(),
+  model: z.string().nullish(),
+  stop_reason: z.string().nullish(),
+  content: z
+    .array(
+      z.looseObject({
+        type: z.string().nullish(),
+        text: z.string().nullish(),
+        id: z.string().nullish(),
+        name: z.string().nullish(),
+        input: z.unknown().optional(),
+      }),
+    )
+    .nullish(),
+  usage: usageSchema.nullish(),
+});
+
+const streamEventSchema = z.looseObject({
+  type: z.string().nullish(),
+  index: z.number().nullish(),
+  message: z
+    .looseObject({
+      id: z.string().nullish(),
+      model: z.string().nullish(),
+      usage: usageSchema.nullish(),
+    })
+    .nullish(),
+  content_block: z
+    .looseObject({
+      type: z.string().nullish(),
+      id: z.string().nullish(),
+      name: z.string().nullish(),
+    })
+    .nullish(),
+  delta: z
+    .looseObject({
+      type: z.string().nullish(),
+      text: z.string().nullish(),
+      partial_json: z.string().nullish(),
+      stop_reason: z.string().nullish(),
+    })
+    .nullish(),
+  usage: usageSchema.nullish(),
+  error: z.looseObject({ message: z.string().nullish() }).nullish(),
+});
 
 function textFromContent(content: unknown): string {
   if (typeof content === "string") return content;
@@ -49,24 +103,48 @@ function parseToolArguments(value: string): JsonObject {
   }
 }
 
+function imageBlock(part: JsonObject): AnthropicBlock {
+  const url =
+    part.image_url !== null && typeof part.image_url === "object"
+      ? (part.image_url as JsonObject).url
+      : undefined;
+  if (typeof url !== "string") {
+    throw unsupportedContent("Image content parts must contain an image_url object with a string url.");
+  }
+  if (/^https?:\/\//.test(url)) {
+    return { type: "image", source: { type: "url", url } };
+  }
+  const dataUrl = parseDataUrl(url);
+  if (dataUrl !== undefined) {
+    return {
+      type: "image",
+      source: { type: "base64", media_type: dataUrl.mediaType, data: dataUrl.data },
+    };
+  }
+  throw unsupportedContent("Image URLs must be http(s) URLs or base64-encoded data: URIs.");
+}
+
 function userBlocks(message: ChatMessage): AnthropicBlock[] {
   if (typeof message.content === "string") return [{ type: "text", text: message.content }];
   if (!Array.isArray(message.content)) return [{ type: "text", text: "" }];
 
   const blocks: AnthropicBlock[] = [];
   for (const raw of message.content) {
-    if (raw === null || typeof raw !== "object") continue;
+    if (raw === null || typeof raw !== "object") {
+      throw unsupportedContent("Message content parts must be objects.");
+    }
     const part = raw as JsonObject;
     if (part.type === "text" && typeof part.text === "string") {
       blocks.push({ type: "text", text: part.text });
       continue;
     }
-    if (part.type === "image_url" && part.image_url !== null && typeof part.image_url === "object") {
-      const url = (part.image_url as JsonObject).url;
-      if (typeof url === "string" && /^https?:\/\//.test(url)) {
-        blocks.push({ type: "image", source: { type: "url", url } });
-      }
+    if (part.type === "image_url") {
+      blocks.push(imageBlock(part));
+      continue;
     }
+    throw unsupportedContent(
+      `Content part type '${typeof part.type === "string" ? part.type : "unknown"}' is not supported for Anthropic providers.`,
+    );
   }
   return blocks.length > 0 ? blocks : [{ type: "text", text: "" }];
 }
@@ -128,27 +206,19 @@ function convertMessages(input: ChatCompletionRequest): {
   return { ...(system === "" ? {} : { system }), messages };
 }
 
-function convertTools(tools: unknown): JsonObject[] | undefined {
-  if (!Array.isArray(tools)) return undefined;
-  const converted = tools.flatMap((raw): JsonObject[] => {
-    if (raw === null || typeof raw !== "object") return [];
-    const tool = raw as Partial<OpenAITool>;
-    if (tool.type !== "function" || tool.function === undefined) return [];
-    return [
-      {
-        name: tool.function.name,
-        ...(tool.function.description === undefined ? {} : { description: tool.function.description }),
-        input_schema: tool.function.parameters ?? { type: "object", properties: {} },
-      },
-    ];
-  });
-  return converted.length === 0 ? undefined : converted;
+function convertTools(tools: ChatCompletionRequest["tools"]): JsonObject[] | undefined {
+  if (tools === undefined || tools.length === 0) return undefined;
+  return tools.map((tool) => ({
+    name: tool.function.name,
+    ...(tool.function.description === undefined ? {} : { description: tool.function.description }),
+    input_schema: tool.function.parameters ?? { type: "object", properties: {} },
+  }));
 }
 
 function convertToolChoice(choice: unknown): JsonObject | undefined {
   if (choice === "auto") return { type: "auto" };
   if (choice === "required") return { type: "any" };
-  if (choice === "none" || choice === undefined) return undefined;
+  if (choice === "none") return { type: "none" };
   if (choice !== null && typeof choice === "object") {
     const object = choice as JsonObject;
     const fn = object.function;
@@ -167,7 +237,10 @@ function buildAnthropicBody(
 ): JsonObject {
   const converted = convertMessages(input);
   const tools = convertTools(input.tools);
-  const toolChoice = convertToolChoice(input.tool_choice);
+  let toolChoice = tools === undefined ? undefined : convertToolChoice(input.tool_choice);
+  if (tools !== undefined && input.parallel_tool_calls === false && toolChoice?.type !== "none") {
+    toolChoice = { ...(toolChoice ?? { type: "auto" }), disable_parallel_tool_use: true };
+  }
   const maxTokens =
     typeof input.max_completion_tokens === "number"
       ? input.max_completion_tokens
@@ -193,7 +266,7 @@ function buildAnthropicBody(
   };
 }
 
-function finishReason(reason: unknown): string | null {
+function finishReason(reason: string | null | undefined): string | null {
   switch (reason) {
     case "end_turn":
     case "stop_sequence":
@@ -207,33 +280,38 @@ function finishReason(reason: unknown): string | null {
   }
 }
 
-function normalizeAnthropicJson(value: JsonObject, fallbackModel: string): JsonObject {
-  const blocks = Array.isArray(value.content) ? value.content : [];
+function normalizeAnthropicJson(providerId: string, value: unknown, fallbackModel: string): JsonObject {
+  const parsed = responseSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new GatewayError({
+      message: `Provider '${providerId}' returned an unexpected response body.`,
+      status: 502,
+      type: "provider_error",
+      retryable: true,
+    });
+  }
+  const blocks = parsed.data.content ?? [];
   const text = blocks
-    .filter((block): block is JsonObject => block !== null && typeof block === "object")
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text as string)
+    .flatMap((block) => (block.type === "text" && typeof block.text === "string" ? [block.text] : []))
     .join("");
-  const toolCalls: OpenAIToolCall[] = blocks
-    .filter((block): block is JsonObject => block !== null && typeof block === "object")
-    .filter((block) => block.type === "tool_use" && typeof block.name === "string")
-    .map((block) => ({
-      id: typeof block.id === "string" ? block.id : crypto.randomUUID(),
-      type: "function",
-      function: {
-        name: block.name as string,
-        arguments: JSON.stringify(block.input ?? {}),
+  const toolCalls: OpenAIToolCall[] = blocks.flatMap((block): OpenAIToolCall[] => {
+    if (block.type !== "tool_use" || typeof block.name !== "string") return [];
+    return [
+      {
+        id: block.id ?? crypto.randomUUID(),
+        type: "function",
+        function: { name: block.name, arguments: JSON.stringify(block.input ?? {}) },
       },
-    }));
-  const usage = value.usage !== null && typeof value.usage === "object" ? (value.usage as JsonObject) : {};
-  const promptTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
-  const completionTokens = typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
+    ];
+  });
+  const promptTokens = parsed.data.usage?.input_tokens ?? 0;
+  const completionTokens = parsed.data.usage?.output_tokens ?? 0;
 
   return {
-    id: typeof value.id === "string" ? value.id : `chatcmpl-${crypto.randomUUID()}`,
+    id: parsed.data.id ?? `chatcmpl-${crypto.randomUUID()}`,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
-    model: typeof value.model === "string" ? value.model : fallbackModel,
+    model: parsed.data.model ?? fallbackModel,
     choices: [
       {
         index: 0,
@@ -242,7 +320,7 @@ function normalizeAnthropicJson(value: JsonObject, fallbackModel: string): JsonO
           content: text === "" && toolCalls.length > 0 ? null : text,
           ...(toolCalls.length === 0 ? {} : { tool_calls: toolCalls }),
         },
-        finish_reason: finishReason(value.stop_reason),
+        finish_reason: finishReason(parsed.data.stop_reason),
       },
     ],
     usage: {
@@ -267,47 +345,70 @@ function anthropicStream(
   let nextToolIndex = 0;
   const toolIndexes = new Map<number, number>();
 
-  const chunk = (delta: JsonObject, reason: string | null = null, usage?: JsonObject): Uint8Array =>
+  const chunk = (delta: { [key: string]: JsonValue }, reason: string | null = null): Uint8Array =>
     formatSse({
       id,
       object: "chat.completion.chunk",
       created,
       model,
       choices: [{ index: 0, delta, finish_reason: reason }],
-      ...(usage === undefined ? {} : { usage }),
     });
+
+  // OpenAI convention: with include_usage, usage arrives in a dedicated final
+  // chunk whose choices array is empty, immediately before [DONE].
+  const finalChunks = (): Uint8Array[] => {
+    const output: Uint8Array[] = [];
+    if (includeUsage) {
+      output.push(
+        formatSse({
+          id,
+          object: "chat.completion.chunk",
+          created,
+          model,
+          choices: [],
+          usage: {
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: promptTokens + completionTokens,
+          },
+        }),
+      );
+    }
+    output.push(formatSse("[DONE]"));
+    return output;
+  };
 
   return mapSseStream(
     source,
     (event) => {
       if (event.data === "[DONE]") return [];
-      let value: JsonObject;
+      let raw: unknown;
       try {
-        value = JSON.parse(event.data) as JsonObject;
+        raw = JSON.parse(event.data);
       } catch {
         return [];
       }
-      const type = typeof value.type === "string" ? value.type : event.event;
+      const parsed = streamEventSchema.safeParse(raw);
+      if (!parsed.success) return [];
+      const value = parsed.data;
+      const type = value.type ?? event.event;
       if (type === "message_start") {
-        const message = value.message as JsonObject | undefined;
-        if (typeof message?.id === "string") id = message.id;
-        if (typeof message?.model === "string") model = message.model;
-        const usage = message?.usage as JsonObject | undefined;
-        if (typeof usage?.input_tokens === "number") promptTokens = usage.input_tokens;
+        id = value.message?.id ?? id;
+        model = value.message?.model ?? model;
+        promptTokens = value.message?.usage?.input_tokens ?? promptTokens;
         return [chunk({ role: "assistant", content: "" })];
       }
       if (type === "content_block_start") {
-        const index = typeof value.index === "number" ? value.index : 0;
-        const block = value.content_block as JsonObject | undefined;
-        if (block?.type !== "tool_use" || typeof block.name !== "string") return [];
+        const block = value.content_block;
+        if (block?.type !== "tool_use" || block.name == null) return [];
         const toolIndex = nextToolIndex++;
-        toolIndexes.set(index, toolIndex);
+        toolIndexes.set(value.index ?? 0, toolIndex);
         return [
           chunk({
             tool_calls: [
               {
                 index: toolIndex,
-                id: typeof block.id === "string" ? block.id : crypto.randomUUID(),
+                id: block.id ?? crypto.randomUUID(),
                 type: "function",
                 function: { name: block.name, arguments: "" },
               },
@@ -316,37 +417,26 @@ function anthropicStream(
         ];
       }
       if (type === "content_block_delta") {
-        const delta = value.delta as JsonObject | undefined;
-        if (delta?.type === "text_delta" && typeof delta.text === "string") {
+        const delta = value.delta;
+        if (delta?.type === "text_delta" && delta.text != null) {
           return [chunk({ content: delta.text })];
         }
-        if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
-          const blockIndex = typeof value.index === "number" ? value.index : 0;
-          const toolIndex = toolIndexes.get(blockIndex) ?? 0;
+        if (delta?.type === "input_json_delta" && delta.partial_json != null) {
+          const toolIndex = toolIndexes.get(value.index ?? 0) ?? 0;
           return [chunk({ tool_calls: [{ index: toolIndex, function: { arguments: delta.partial_json } }] })];
         }
         return [];
       }
       if (type === "message_delta") {
-        const delta = value.delta as JsonObject | undefined;
-        const usage = value.usage as JsonObject | undefined;
-        if (typeof usage?.output_tokens === "number") completionTokens = usage.output_tokens;
-        const normalizedUsage = includeUsage
-          ? {
-              prompt_tokens: promptTokens,
-              completion_tokens: completionTokens,
-              total_tokens: promptTokens + completionTokens,
-            }
-          : undefined;
-        return [chunk({}, finishReason(delta?.stop_reason), normalizedUsage)];
+        completionTokens = value.usage?.output_tokens ?? completionTokens;
+        return [chunk({}, finishReason(value.delta?.stop_reason))];
       }
       if (type === "error") {
-        const error = value.error as JsonObject | undefined;
         done = true;
         return [
           formatSse({
             error: {
-              message: typeof error?.message === "string" ? error.message : "Anthropic stream failed.",
+              message: value.error?.message ?? "Anthropic stream failed.",
               type: "provider_error",
             },
           }),
@@ -355,11 +445,11 @@ function anthropicStream(
       }
       if (type === "message_stop") {
         done = true;
-        return [formatSse("[DONE]")];
+        return finalChunks();
       }
       return [];
     },
-    () => (done ? [] : [formatSse("[DONE]")]),
+    () => (done ? [] : finalChunks()),
   );
 }
 
@@ -398,16 +488,27 @@ export class AnthropicAdapter implements ProviderAdapter {
           message: `Provider '${this.id}' returned an empty stream.`,
           status: 502,
           type: "provider_error",
+          retryable: true,
         });
       }
-      const streamOptions = input.stream_options as JsonObject | undefined;
       return new Response(
-        anthropicStream(response.body, model, streamOptions?.include_usage === true),
+        anthropicStream(response.body, model, input.stream_options?.include_usage === true),
         { headers: responseHeaders("text/event-stream; charset=utf-8", response.headers) },
       );
     }
-    const body = (await response.json()) as JsonObject;
-    return Response.json(normalizeAnthropicJson(body, model), {
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch (error) {
+      throw new GatewayError({
+        message: `Provider '${this.id}' returned a response that is not valid JSON.`,
+        status: 502,
+        type: "provider_error",
+        retryable: true,
+        cause: error,
+      });
+    }
+    return Response.json(normalizeAnthropicJson(this.id, body, model), {
       headers: responseHeaders("application/json", response.headers),
     });
   }

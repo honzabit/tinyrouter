@@ -12,7 +12,7 @@ It is intended to feel like **Caddy for LLM APIs**: one process, one configurati
 - Works with clients that can target an OpenAI-compatible base URL
 - Supports streaming and non-streaming responses
 - Supports OpenAI, Anthropic, Gemini, and generic OpenAI-compatible providers
-- Translates text conversations and function/tool calls for Anthropic and Gemini
+- Translates text, images, and function/tool calls for Anthropic and Gemini
 - Resolves friendly model aliases to ordered provider/model targets
 - Retries and falls back only before a response has started
 - Emits structured logs without prompts or completions
@@ -115,6 +115,8 @@ The native `openai`, `anthropic`, and `gemini` provider types require `api_key`.
 
 `idle_timeout_seconds` defaults to `0`, disabling Bun's connection-idle timer so a model may think or pause for more than ten seconds without losing an SSE stream. Set it to `1`–`255` only if you intentionally want a global idle limit.
 
+`timeout_ms` bounds how long a provider may take to start responding: it covers the wait for response headers, plus the full body for non-streaming calls. Once a stream has begun, TinyRouter never aborts it mid-response; a client disconnect is propagated upstream instead.
+
 Use `tinyrouter --check --config tinyrouter.yaml` to validate a file. `--print-config` shows the resolved configuration with API keys redacted.
 
 ## Routing contract
@@ -151,6 +153,8 @@ Structured logs record target attempts, status, latency, and routing outcome. Th
 
 The generic OpenAI-compatible adapter passes unknown request fields through unchanged. Native adapters intentionally support a smaller common subset; provider-specific features that have no safe cross-provider representation are not silently invented.
 
+Images are translated for both native adapters: Anthropic accepts http(s) URLs and base64 `data:` URIs, Gemini accepts base64 `data:` URIs. Content parts that have no representation for the selected provider are rejected with a 400 `unsupported_content` error rather than silently dropped, so clients never talk to a silently blind model.
+
 ## Operations
 
 | Endpoint | Authentication | Purpose |
@@ -163,16 +167,38 @@ The generic OpenAI-compatible adapter passes unknown request fields through unch
 
 `/readyz` verifies that configuration and provider adapters loaded. It deliberately does not send paid health-check requests to providers.
 
+TinyRouter logs a warning at startup when `server.api_key` is unset and the host is not loopback — that combination leaves `/v1` endpoints open to anyone who can reach the address. On SIGINT or SIGTERM it drains in-flight requests, including active streams, for up to ten seconds before closing the remaining connections.
+
 TinyRouter does not terminate TLS. Put it behind a trusted reverse proxy when it is reachable outside a private machine or network. Protect the metrics endpoint separately if operational metadata is sensitive in your environment.
 
 ## Build and test
 
 ```bash
 bun run check
+bun run lint
+bun run knip
 bun test
 bun run build
 ./dist/tinyrouter --version
 ```
+
+`check` type-checks, `lint` runs Biome (formatter and linter; `bun run format` rewrites in place), and `knip` reports unused exports and dependencies. CI runs all of them.
+
+### Smoke tests against real providers
+
+Unit tests mock every upstream. `bun run smoke` complements them with live traffic: it starts a real gateway configured with whichever providers have credentials in the environment, then sends a completion, a streamed completion, and a forced tool call through each one.
+
+```bash
+OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... bun run smoke
+```
+
+```bash
+SMOKE_LOCAL_BASE_URL=http://localhost:11434/v1 SMOKE_LOCAL_MODEL=qwen2.5:0.5b bun run smoke
+```
+
+Providers without credentials are skipped, and the models are overridable via `SMOKE_OPENAI_MODEL`, `SMOKE_ANTHROPIC_MODEL`, and `SMOKE_GEMINI_MODEL`.
+
+The Smoke workflow runs the same script on every published release and on demand from the Actions tab. One job needs no secrets at all: it installs Ollama on the runner, pulls a small CPU model, and routes real inference through the gateway. The other exercises hosted providers using the `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` repository secrets — set whichever you want covered.
 
 The compiled executable embeds the Bun runtime. It is operationally standalone, although larger than an equivalent Go executable.
 

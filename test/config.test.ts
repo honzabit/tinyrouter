@@ -61,4 +61,20 @@ providers:
     expect(JSON.stringify(redactConfig(config))).not.toContain("provider-secret");
     expect(JSON.stringify(redactConfig(config))).not.toContain("inbound");
   });
+
+  test("redacts provider header values", () => {
+    const config = parseConfig(`
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+    headers:
+      Authorization: Bearer header-secret
+      x-tenant: plain-value
+`);
+    const redacted = JSON.stringify(redactConfig(config));
+    expect(redacted).not.toContain("header-secret");
+    expect(redacted).not.toContain("plain-value");
+    expect(redacted).toContain("Authorization");
+  });
 });

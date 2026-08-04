@@ -38,9 +38,9 @@ describe("HTTP gateway", () => {
         headers: { authorization: "Bearer gateway-secret" },
       }),
     );
-    const models = (await modelsResponse.json()) as any;
-    expect(models.data.map((model: any) => model.id)).toContain("fast");
-    expect(models.data.map((model: any) => model.id)).toContain("mock/model-a");
+    const models = (await modelsResponse.json()) as { data: Array<{ id: string }> };
+    expect(models.data.map((model) => model.id)).toContain("fast");
+    expect(models.data.map((model) => model.id)).toContain("mock/model-a");
 
     const metrics = await (await gateway.fetch(new Request("http://test/metrics"))).text();
     expect(metrics).toContain("tinyrouter_uptime_seconds");
@@ -73,6 +73,69 @@ describe("HTTP gateway", () => {
     expect(response.headers.get("x-tinyrouter-provider")).toBe("mock");
   });
 
+  test("rejects model names containing control characters", async () => {
+    const gateway = createTestGateway();
+    const response = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer gateway-secret" },
+        body: JSON.stringify({ model: "fast\u0000", messages: [{ role: "user", content: "hi" }] }),
+      }),
+    );
+    expect(response.status).toBe(400);
+  });
+
+  test("enforces max_body_bytes while reading chunked bodies", async () => {
+    const config = parseConfig(`
+server:
+  api_key: gateway-secret
+  max_body_bytes: 1024
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({}),
+    });
+
+    const oversized = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer gateway-secret" },
+        body: JSON.stringify({
+          model: "fast",
+          messages: [{ role: "user", content: "x".repeat(2048) }],
+        }),
+      }),
+    );
+    expect(oversized.status).toBe(413);
+
+    // A chunked body without content-length must be capped mid-read, not buffered.
+    let cancelled = false;
+    const chunk = new TextEncoder().encode("x".repeat(512));
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const streamed = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer gateway-secret" },
+        body: endless,
+      }),
+    );
+    expect(streamed.status).toBe(413);
+    expect(cancelled).toBe(true);
+  });
+
   test("returns an OpenAI-shaped validation error", async () => {
     const gateway = createTestGateway();
     const response = await gateway.fetch(
@@ -82,7 +145,7 @@ describe("HTTP gateway", () => {
         body: JSON.stringify({ model: "fast", messages: [] }),
       }),
     );
-    const body = (await response.json()) as any;
+    const body = (await response.json()) as { error: { type: string } };
     expect(response.status).toBe(400);
     expect(body.error.type).toBe("invalid_request_error");
   });
