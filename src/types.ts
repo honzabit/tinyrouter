@@ -57,6 +57,7 @@ export interface AttemptRecord {
   durationMs: number;
   outcome: "success" | "retry" | "fallback" | "error";
   errorType?: string;
+  retryDelayMs?: number;
 }
 
 export interface RoutedResponse {

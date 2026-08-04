@@ -5,6 +5,55 @@ import type { ProviderAdapter } from "./providers/provider.ts";
 import type { AttemptRecord, ChatCompletionRequest, ResolvedTarget, RoutedResponse } from "./types.ts";
 
 export type Fetch = (request: Request) => Promise<Response>;
+export type Wait = (ms: number, signal: AbortSignal) => Promise<void>;
+
+export function parseRetryAfter(headers: Headers, now: number): number | undefined {
+  const msHeader = headers.get("retry-after-ms");
+  if (msHeader !== null) {
+    const ms = Number(msHeader);
+    if (Number.isFinite(ms) && ms >= 0) return Math.round(ms);
+  }
+  const header = headers.get("retry-after");
+  if (header === null) return undefined;
+  const seconds = Number(header);
+  // A numeric value is a duration in seconds; a negative one is malformed and
+  // must not fall through to date parsing, which would read it as a year.
+  if (Number.isFinite(seconds)) return seconds >= 0 ? Math.round(seconds * 1000) : undefined;
+  const date = Date.parse(header);
+  if (!Number.isNaN(date)) return Math.max(0, date - now);
+  return undefined;
+}
+
+// The provider's Retry-After wins when it is longer than the computed step;
+// either way the wait never exceeds maxMs, so a hostile Retry-After cannot
+// hold a client request hostage. Jitter keeps concurrent retries apart.
+export function retryBackoffMs(options: {
+  attempt: number;
+  initialMs: number;
+  maxMs: number;
+  retryAfterMs?: number | undefined;
+  random?: () => number;
+}): number {
+  const step = Math.min(options.maxMs, options.initialMs * 2 ** options.attempt);
+  const random = options.random ?? Math.random;
+  const jittered = step === 0 ? 0 : Math.round(step / 2 + random() * (step / 2));
+  return Math.min(options.maxMs, Math.max(jittered, options.retryAfterMs ?? 0));
+}
+
+// Resolves early when the signal aborts so a disconnected client never keeps
+// the gateway sleeping; the caller checks the signal after waiting.
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0 || signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal.addEventListener("abort", finish, { once: true });
+  });
+}
 
 function splitTarget(target: string): ResolvedTarget {
   const slash = target.indexOf("/");
@@ -40,6 +89,7 @@ export class Router {
     private readonly adapters: Map<string, ProviderAdapter>,
     private readonly metrics: Metrics,
     private readonly fetchFn: Fetch = fetch,
+    private readonly waitFn: Wait = abortableSleep,
   ) {}
 
   resolve(modelOrAlias: string): ResolvedTarget[] {
@@ -130,8 +180,17 @@ export class Router {
           const error = await adapter.parseError(upstreamResponse);
           lastError = error;
           const canMove = this.config.routing.retry_statuses.includes(upstreamResponse.status);
+          const willRetry = canMove && hasRetry;
+          const backoffMs = willRetry
+            ? retryBackoffMs({
+                attempt: retry,
+                initialMs: this.config.routing.backoff_initial_ms,
+                maxMs: this.config.routing.backoff_max_ms,
+                retryAfterMs: parseRetryAfter(upstreamResponse.headers, Date.now()),
+              })
+            : 0;
           const outcome = attemptOutcome({
-            canRetry: canMove && hasRetry,
+            canRetry: willRetry,
             hasFallback: canMove && hasFallback,
           });
           attempts.push({
@@ -141,6 +200,7 @@ export class Router {
             durationMs,
             outcome,
             errorType: error.type,
+            ...(backoffMs > 0 ? { retryDelayMs: backoffMs } : {}),
           });
           this.metrics.attempt({
             provider: target.providerId,
@@ -148,7 +208,13 @@ export class Router {
             status: String(upstreamResponse.status),
           });
           if (!canMove) throw failureWithAttempts(error, attempts);
-          if (hasRetry) continue;
+          if (hasRetry) {
+            if (backoffMs > 0) {
+              await this.waitFn(backoffMs, callerSignal);
+              if (callerSignal.aborted) throw failureWithAttempts(error, attempts);
+            }
+            continue;
+          }
           break;
         } catch (caught) {
           clearTimeout(timer);
@@ -168,8 +234,16 @@ export class Router {
                 });
           lastError = error;
           const canMove = error.retryable;
+          const willRetry = canMove && hasRetry;
+          const backoffMs = willRetry
+            ? retryBackoffMs({
+                attempt: retry,
+                initialMs: this.config.routing.backoff_initial_ms,
+                maxMs: this.config.routing.backoff_max_ms,
+              })
+            : 0;
           const outcome = attemptOutcome({
-            canRetry: canMove && hasRetry,
+            canRetry: willRetry,
             hasFallback: canMove && hasFallback,
           });
           attempts.push({
@@ -178,6 +252,7 @@ export class Router {
             durationMs,
             outcome,
             errorType: error.type,
+            ...(backoffMs > 0 ? { retryDelayMs: backoffMs } : {}),
           });
           this.metrics.attempt({
             provider: target.providerId,
@@ -189,7 +264,13 @@ export class Router {
                 : "network_error",
           });
           if (!canMove) throw failureWithAttempts(error, attempts);
-          if (hasRetry) continue;
+          if (hasRetry) {
+            if (backoffMs > 0) {
+              await this.waitFn(backoffMs, callerSignal);
+              if (callerSignal.aborted) throw failureWithAttempts(error, attempts);
+            }
+            continue;
+          }
           break;
         }
       }

@@ -56,7 +56,11 @@ const rawConfigSchema = z.object({
   routing: z
     .object({
       retries: z.number().int().min(0).max(3).default(0),
-      retry_statuses: z.array(z.number().int().min(400).max(599)).default([429, 500, 502, 503, 504]),
+      // 529 is Anthropic's overloaded_error; without it an overloaded target
+      // would neither retry nor fall back.
+      retry_statuses: z.array(z.number().int().min(400).max(599)).default([429, 500, 502, 503, 504, 529]),
+      backoff_initial_ms: z.number().int().min(0).max(10_000).default(200),
+      backoff_max_ms: z.number().int().min(0).max(30_000).default(2_000),
     })
     .prefault({}),
   providers: z

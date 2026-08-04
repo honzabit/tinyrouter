@@ -4,7 +4,7 @@ TinyRouter is a small, auditable, self-hosted LLM gateway. Bring your own provid
 
 It is intended to feel like **Caddy for LLM APIs**: one process, one configuration file, and very little magic.
 
-> **Status:** v0.1 alpha. The core routing contract is tested, but this release has not yet been exercised under production traffic.
+> **Status:** alpha. The routing contract is unit-tested and smoke-checked against live providers on every release, but TinyRouter has not yet been exercised under production traffic.
 
 ## What it does
 
@@ -147,7 +147,9 @@ server:
 
 routing:
   retries: 0
-  retry_statuses: [429, 500, 502, 503, 504]
+  retry_statuses: [429, 500, 502, 503, 504, 529]
+  backoff_initial_ms: 200
+  backoff_max_ms: 2000
 
 providers:
   openai:
@@ -186,6 +188,8 @@ The native `openai`, `anthropic`, and `gemini` provider types require `api_key`.
 
 `timeout_ms` bounds how long a provider may take to start responding: it covers the wait for response headers, plus the full body for non-streaming calls. Once a stream has begun, TinyRouter never aborts it mid-response; a client disconnect is propagated upstream instead.
 
+When `retries` is greater than zero, TinyRouter waits before retrying the same target: the provider's `Retry-After` (or `retry-after-ms`) when it sends one, otherwise an exponentially growing jittered delay starting at `backoff_initial_ms`. Either way a single wait never exceeds `backoff_max_ms`, so a provider announcing a long cooldown cannot hold a client request hostage, and a disconnecting client cancels the wait. Falling back to a different target is always immediate — its capacity is unrelated to the failure that triggered the fallback. Set `backoff_max_ms: 0` to restore immediate retries.
+
 Use `tinyrouter --check --config tinyrouter.yaml` to validate a file. `--print-config` shows the resolved configuration with API keys redacted.
 
 ### Finding model IDs
@@ -217,9 +221,10 @@ For each request TinyRouter:
 1. Resolves the alias to its ordered targets.
 2. Calls the first target.
 3. Retries it only when the status is configured in `retry_statuses` or the connection fails.
-4. Moves to the next target only for those same retryable failures.
-5. Stops immediately on authentication and ordinary request errors.
-6. Commits to a provider as soon as that provider returns a successful response.
+4. Waits between retries of the same target — the provider's `Retry-After` when sent, a jittered exponential delay otherwise, never longer than `backoff_max_ms`.
+5. Moves to the next target only for those same retryable failures, without waiting.
+6. Stops immediately on authentication and ordinary request errors.
+7. Commits to a provider as soon as that provider returns a successful response.
 
 TinyRouter never switches providers after a stream has begun. Mid-stream errors remain stream errors; replaying the request against another model could duplicate output or tool calls.
 

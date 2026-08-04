@@ -18,6 +18,9 @@ routes:
 
     expect(config.server.port).toBe(8080);
     expect(config.routing.retry_statuses).toContain(503);
+    expect(config.routing.retry_statuses).toContain(529);
+    expect(config.routing.backoff_initial_ms).toBe(200);
+    expect(config.routing.backoff_max_ms).toBe(2000);
     expect(config.providers.upstream?.api_key).toBe("secret");
     expect(config.routes.fast).toEqual(["upstream/model-a"]);
   });

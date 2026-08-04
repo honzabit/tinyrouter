@@ -6,7 +6,12 @@ server:
 
 routing:
   retries: 0
-  retry_statuses: [429, 500, 502, 503, 504]
+  retry_statuses: [429, 500, 502, 503, 504, 529]
+  # Retries of the same target wait for the provider's Retry-After when sent,
+  # otherwise an exponential jittered delay; a single wait never exceeds
+  # backoff_max_ms. Fallback to the next target is always immediate.
+  backoff_initial_ms: 200
+  backoff_max_ms: 2000
 
 providers:
   openai:

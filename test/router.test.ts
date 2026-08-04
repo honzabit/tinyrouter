@@ -3,7 +3,7 @@ import { parseConfig } from "../src/config.ts";
 import { GatewayError } from "../src/errors.ts";
 import { Metrics } from "../src/metrics.ts";
 import { createAdapters } from "../src/providers/index.ts";
-import { type Fetch, Router } from "../src/router.ts";
+import { type Fetch, parseRetryAfter, Router, retryBackoffMs } from "../src/router.ts";
 import type { ChatCompletionRequest } from "../src/types.ts";
 
 const input: ChatCompletionRequest = {
@@ -99,11 +99,17 @@ routes:
   smart: [only/model-a]
 `);
     let calls = 0;
-    const router = new Router(config, createAdapters(config), new Metrics(), async () => {
-      calls += 1;
-      if (calls === 1) throw new TypeError("connection reset");
-      return Response.json({ id: "ok", choices: [] });
-    });
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => {
+        calls += 1;
+        if (calls === 1) throw new TypeError("connection reset");
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
 
     const result = await router.route(input, new AbortController().signal);
     expect(calls).toBe(2);
@@ -150,5 +156,172 @@ routes:
     const result = await router.route(input, new AbortController().signal);
     expect(result.target.providerId).toBe("backup");
     expect(result.attempts[0]?.errorType).toBe("provider_timeout_error");
+  });
+});
+
+const singleTargetConfig = (routingYaml: string) =>
+  parseConfig(`
+routing:
+${routingYaml}
+providers:
+  only:
+    type: openai-compatible
+    base_url: https://only.test/v1
+routes:
+  smart: [only/model-a]
+`);
+
+describe("retry backoff", () => {
+  test("waits the provider's Retry-After between retries of the same target", async () => {
+    const config = singleTargetConfig("  retries: 2");
+    const waits: number[] = [];
+    let calls = 0;
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => {
+        calls += 1;
+        if (calls < 3) {
+          return Response.json(
+            { error: { message: "slow down" } },
+            { status: 429, headers: { "retry-after": "1" } },
+          );
+        }
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async (ms) => {
+        waits.push(ms);
+      },
+    );
+
+    const result = await router.route(input, new AbortController().signal);
+    expect(calls).toBe(3);
+    expect(waits).toEqual([1000, 1000]);
+    expect(result.attempts[0]?.retryDelayMs).toBe(1000);
+    expect(result.attempts[2]?.retryDelayMs).toBeUndefined();
+  });
+
+  test("applies jittered exponential backoff to connection failures", async () => {
+    const config = singleTargetConfig("  retries: 2");
+    const waits: number[] = [];
+    let calls = 0;
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => {
+        calls += 1;
+        if (calls < 3) throw new TypeError("connection reset");
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async (ms) => {
+        waits.push(ms);
+      },
+    );
+
+    await router.route(input, new AbortController().signal);
+    expect(waits.length).toBe(2);
+    expect(waits[0]).toBeGreaterThanOrEqual(100);
+    expect(waits[0]).toBeLessThanOrEqual(200);
+    expect(waits[1]).toBeGreaterThanOrEqual(200);
+    expect(waits[1]).toBeLessThanOrEqual(400);
+  });
+
+  test("never waits before falling back to a different target", async () => {
+    const config = parseConfig(`
+providers:
+  first:
+    type: openai-compatible
+    base_url: https://first.test/v1
+  second:
+    type: openai-compatible
+    base_url: https://second.test/v1
+routes:
+  smart: [first/model-a, second/model-b]
+`);
+    const waits: number[] = [];
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        if (new URL(request.url).hostname === "first.test") {
+          return Response.json(
+            { error: { message: "busy" } },
+            { status: 503, headers: { "retry-after": "9" } },
+          );
+        }
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async (ms) => {
+        waits.push(ms);
+      },
+    );
+
+    const result = await router.route(input, new AbortController().signal);
+    expect(result.target.providerId).toBe("second");
+    expect(waits).toEqual([]);
+  });
+
+  test("backoff_max_ms of 0 restores immediate retries and overrides Retry-After", async () => {
+    const config = singleTargetConfig("  retries: 1\n  backoff_max_ms: 0");
+    const waits: number[] = [];
+    let calls = 0;
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => {
+        calls += 1;
+        if (calls === 1) {
+          return Response.json(
+            { error: { message: "slow down" } },
+            { status: 429, headers: { "retry-after": "5" } },
+          );
+        }
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async (ms) => {
+        waits.push(ms);
+      },
+    );
+
+    const result = await router.route(input, new AbortController().signal);
+    expect(calls).toBe(2);
+    expect(waits).toEqual([]);
+    expect(result.attempts[0]?.retryDelayMs).toBeUndefined();
+  });
+});
+
+describe("retry backoff math", () => {
+  test("parseRetryAfter reads retry-after-ms, seconds, and HTTP dates", () => {
+    expect(parseRetryAfter(new Headers({ "retry-after-ms": "250" }), 0)).toBe(250);
+    expect(parseRetryAfter(new Headers({ "retry-after-ms": "250", "retry-after": "9" }), 0)).toBe(250);
+    expect(parseRetryAfter(new Headers({ "retry-after": "2" }), 0)).toBe(2000);
+    expect(parseRetryAfter(new Headers({ "retry-after": "1.5" }), 0)).toBe(1500);
+    const now = Date.parse("2026-01-01T00:00:00Z");
+    expect(parseRetryAfter(new Headers({ "retry-after": "Thu, 01 Jan 2026 00:00:05 GMT" }), now)).toBe(5000);
+    expect(parseRetryAfter(new Headers({ "retry-after": "Thu, 01 Jan 2026 00:00:00 GMT" }), now + 1)).toBe(0);
+    expect(parseRetryAfter(new Headers({ "retry-after": "soon" }), 0)).toBeUndefined();
+    expect(parseRetryAfter(new Headers({ "retry-after": "-2" }), 0)).toBeUndefined();
+    expect(parseRetryAfter(new Headers(), 0)).toBeUndefined();
+  });
+
+  test("retryBackoffMs grows exponentially, honors Retry-After, and clamps to the maximum", () => {
+    const top = () => 1;
+    const bottom = () => 0;
+    expect(retryBackoffMs({ attempt: 0, initialMs: 200, maxMs: 2000, random: top })).toBe(200);
+    expect(retryBackoffMs({ attempt: 0, initialMs: 200, maxMs: 2000, random: bottom })).toBe(100);
+    expect(retryBackoffMs({ attempt: 2, initialMs: 200, maxMs: 2000, random: top })).toBe(800);
+    expect(retryBackoffMs({ attempt: 6, initialMs: 200, maxMs: 2000, random: top })).toBe(2000);
+    expect(retryBackoffMs({ attempt: 0, initialMs: 200, maxMs: 2000, retryAfterMs: 1500, random: top })).toBe(
+      1500,
+    );
+    expect(
+      retryBackoffMs({ attempt: 0, initialMs: 200, maxMs: 2000, retryAfterMs: 60_000, random: top }),
+    ).toBe(2000);
+    expect(retryBackoffMs({ attempt: 0, initialMs: 0, maxMs: 2000, random: top })).toBe(0);
+    expect(retryBackoffMs({ attempt: 0, initialMs: 200, maxMs: 0, retryAfterMs: 5000, random: top })).toBe(0);
   });
 });
