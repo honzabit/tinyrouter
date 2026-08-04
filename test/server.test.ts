@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import pkg from "../package.json";
 import { parseConfig } from "../src/config.ts";
 import { silentLogger } from "../src/logger.ts";
 import { createGateway } from "../src/server.ts";
@@ -44,6 +45,16 @@ describe("HTTP gateway", () => {
 
     const metrics = await (await gateway.fetch(new Request("http://test/metrics"))).text();
     expect(metrics).toContain("tinyrouter_uptime_seconds");
+  });
+
+  test("reports the package version at the root endpoint", async () => {
+    const gateway = createTestGateway();
+    const body = (await (await gateway.fetch(new Request("http://test/"))).json()) as {
+      name: string;
+      version: string;
+    };
+    expect(body.name).toBe("TinyRouter");
+    expect(body.version).toBe(pkg.version);
   });
 
   test("requires the configured inbound bearer token", async () => {

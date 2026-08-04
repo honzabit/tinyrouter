@@ -2,8 +2,8 @@
 import { ConfigError, loadConfig, redactConfig } from "./config.ts";
 import { jsonLogger } from "./logger.ts";
 import { createGateway } from "./server.ts";
+import { VERSION } from "./version.ts";
 
-const VERSION = "0.1.0";
 const SHUTDOWN_GRACE_MS = 10_000;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 

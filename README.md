@@ -53,6 +53,16 @@ Use something else when:
 
 Those are good projects, and TinyRouter is not trying to replace them. It exists for the case where the feature you want most is being able to understand the whole thing.
 
+## Install
+
+Every release attaches standalone executables for Linux and macOS on x64 and arm64, alongside a `SHA256SUMS` file. They embed the Bun runtime, so nothing else needs to be installed:
+
+```bash
+curl -fsSL -o tinyrouter https://github.com/honzabit/tinyrouter/releases/latest/download/tinyrouter-linux-x64 && chmod +x tinyrouter
+```
+
+Swap `linux-x64` for `linux-arm64`, `darwin-x64`, or `darwin-arm64` as needed. To run from source instead, follow the quick start below.
+
 ## Quick start
 
 You need [Bun](https://bun.sh/) 1.3.14 or later.
@@ -250,7 +260,25 @@ SMOKE_LOCAL_BASE_URL=http://localhost:11434/v1 SMOKE_LOCAL_MODEL=qwen2.5:0.5b bu
 
 Providers without credentials are skipped, and the models are overridable via `SMOKE_OPENAI_MODEL`, `SMOKE_ANTHROPIC_MODEL`, and `SMOKE_GEMINI_MODEL`.
 
-The Smoke workflow runs the same script on every published release and on demand from the Actions tab. One job needs no secrets at all: it installs Ollama on the runner, pulls a small CPU model, and routes real inference through the gateway. The other exercises hosted providers using the `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` repository secrets — set whichever you want covered.
+The Smoke workflow runs the same script on demand from the Actions tab, and the release workflow runs it as a gate. One job needs no secrets at all: it installs Ollama on the runner, pulls a small CPU model, and routes real inference through the gateway. The other exercises hosted providers using the `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` repository secrets — set whichever you want covered. Model IDs can be overridden per repository with `SMOKE_OPENAI_MODEL`, `SMOKE_ANTHROPIC_MODEL`, `SMOKE_GEMINI_MODEL`, and `OLLAMA_MODEL` Actions variables, so a provider retiring a model does not require a code change.
+
+### Releasing
+
+Versions follow semantic versioning, with the caveat that 0.x minor bumps carry the breaking changes. Bump the minor for anything that changes the configuration schema, the routing contract, or an endpoint's shape; bump the patch for fixes.
+
+`package.json` is the only place the version lives — `--version` and `GET /` both read it — so a release is a version bump, a tag, and a push:
+
+```bash
+bun run release 0.2.0
+```
+
+That script rewrites `package.json`, commits, and creates the annotated tag; pushing it starts the release workflow:
+
+```bash
+git push origin main --follow-tags
+```
+
+The workflow re-runs the full suite, gates on the live smoke checks, then builds the four executables and publishes the release with a generated changelog. A tag whose name disagrees with `package.json` fails before anything is published, and nothing is released if smoke fails. The workflow can also be dispatched manually with an existing tag to rebuild and attach its executables.
 
 The compiled executable embeds the Bun runtime. It is operationally standalone, although larger than an equivalent Go executable.
 

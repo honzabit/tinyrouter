@@ -2,8 +2,8 @@ name: Smoke
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
+  # Called by the release workflow, which gates publishing on these checks.
+  workflow_call:
 
 permissions:
   contents: read

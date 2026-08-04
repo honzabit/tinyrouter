@@ -7,6 +7,7 @@ import { Metrics } from "./metrics.ts";
 import { createAdapters } from "./providers/index.ts";
 import { type Fetch, Router } from "./router.ts";
 import { chatRequestSchema } from "./types.ts";
+import { VERSION } from "./version.ts";
 
 function authorized(request: Request, expected: string | undefined): boolean {
   if (expected === undefined) return true;
@@ -100,7 +101,7 @@ export function createGateway(
       });
     }
     if (url.pathname === "/") {
-      return Response.json({ name: "TinyRouter", version: "0.1.0", status: "ok" });
+      return Response.json({ name: "TinyRouter", version: VERSION, status: "ok" });
     }
 
     if (url.pathname.startsWith("/v1/") && !authorized(request, config.server.api_key)) {

@@ -16,6 +16,7 @@
     "knip": "knip",
     "test": "bun test",
     "smoke": "bun scripts/smoke.ts",
+    "release": "bun scripts/release.ts",
     "build": "bun build src/main.ts --compile --outfile dist/tinyrouter"
   },
   "dependencies": {
