@@ -72,7 +72,7 @@ function buildTargets(): SmokeTarget[] {
     });
   }
   if (process.env.GEMINI_API_KEY) {
-    const model = process.env.SMOKE_GEMINI_MODEL ?? "gemini-2.5-flash";
+    const model = process.env.SMOKE_GEMINI_MODEL ?? "gemini-flash-latest";
     targets.push({
       name: "gemini",
       target: `gemini/${model}`,

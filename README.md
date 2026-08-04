@@ -167,6 +167,8 @@ curl -s -H "authorization: Bearer $OPENAI_API_KEY" https://api.openai.com/v1/mod
 curl -s -H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" https://api.anthropic.com/v1/models
 ```
 
+Appearing in that catalog does not guarantee access: a model retired for new accounts is still listed but answers `404` when called. Some providers also publish floating aliases, such as Gemini's `gemini-flash-latest`, which track the current model and avoid this kind of drift at the cost of a moving target.
+
 TinyRouter's own `GET /v1/models` is a different list: it reports the aliases and targets in your configuration, not the catalog a provider offers.
 
 ## Routing contract

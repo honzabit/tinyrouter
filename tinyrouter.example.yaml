@@ -39,5 +39,5 @@ routes:
     - openai/gpt-5.2
 
   economical:
-    - gemini/gemini-2.5-flash
+    - gemini/gemini-3.6-flash
     - openai/gpt-5-mini

@@ -15,7 +15,7 @@ permissions:
 env:
   SMOKE_OPENAI_MODEL: ${{ vars.SMOKE_OPENAI_MODEL || 'gpt-5-mini' }}
   SMOKE_ANTHROPIC_MODEL: ${{ vars.SMOKE_ANTHROPIC_MODEL || 'claude-haiku-4-5' }}
-  SMOKE_GEMINI_MODEL: ${{ vars.SMOKE_GEMINI_MODEL || 'gemini-2.5-flash' }}
+  SMOKE_GEMINI_MODEL: ${{ vars.SMOKE_GEMINI_MODEL || 'gemini-flash-latest' }}
   OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL || 'qwen2.5:0.5b' }}
 
 jobs:
