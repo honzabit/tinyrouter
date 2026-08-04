@@ -10,6 +10,10 @@
 // Providers without credentials are skipped. Exits 2 when nothing is enabled,
 // 1 when any enabled check fails, 0 when every enabled check passes.
 
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: the ${NAME} spans in
+// the generated YAML are TinyRouter's own environment placeholders, which keeps
+// credentials out of the config file this script writes to disk.
+
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
