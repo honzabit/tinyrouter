@@ -1,0 +1,38 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+  api_key: ${TINYROUTER_API_KEY}
+  idle_timeout_seconds: 0
+
+routing:
+  retries: 0
+  retry_statuses: [429, 500, 502, 503, 504]
+
+providers:
+  openai:
+    type: openai
+    api_key: ${OPENAI_API_KEY}
+    timeout_ms: 60000
+
+  anthropic:
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+    timeout_ms: 60000
+
+  gemini:
+    type: gemini
+    api_key: ${GEMINI_API_KEY}
+    timeout_ms: 60000
+
+routes:
+  fast:
+    - openai/gpt-5-mini
+    - anthropic/claude-haiku-4-5
+
+  smart:
+    - anthropic/claude-sonnet-4-6
+    - openai/gpt-5.2
+
+  economical:
+    - gemini/gemini-3-flash
+    - openai/gpt-5-mini

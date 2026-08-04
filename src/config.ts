@@ -1,0 +1,173 @@
+import { readFile } from "node:fs/promises";
+import { parse as parseYaml } from "yaml";
+import { z } from "zod";
+
+const identifier = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+
+const commonProviderFields = {
+  base_url: z.url().optional(),
+  timeout_ms: z.number().int().positive().max(600_000).default(60_000),
+  headers: z.record(z.string(), z.string()).default({}),
+};
+
+const providerSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("openai"),
+    ...commonProviderFields,
+    api_key: z.string().min(1),
+    base_url: z.url().default("https://api.openai.com/v1"),
+  }),
+  z.object({
+    type: z.literal("openai-compatible"),
+    ...commonProviderFields,
+    api_key: z.string().min(1).optional(),
+    base_url: z.url(),
+  }),
+  z.object({
+    type: z.literal("anthropic"),
+    ...commonProviderFields,
+    api_key: z.string().min(1),
+    base_url: z.url().default("https://api.anthropic.com/v1"),
+    anthropic_version: z.string().default("2023-06-01"),
+    default_max_tokens: z.number().int().positive().default(4096),
+  }),
+  z.object({
+    type: z.literal("gemini"),
+    ...commonProviderFields,
+    api_key: z.string().min(1),
+    base_url: z.url().default("https://generativelanguage.googleapis.com/v1beta"),
+  }),
+]);
+
+const rawConfigSchema = z.object({
+  server: z
+    .object({
+      host: z.string().default("0.0.0.0"),
+      port: z.number().int().min(1).max(65_535).default(8080),
+      api_key: z.string().min(1).optional(),
+      max_body_bytes: z.number().int().positive().default(10 * 1024 * 1024),
+      idle_timeout_seconds: z.number().int().min(0).max(255).default(0),
+    })
+    .default({
+      host: "0.0.0.0",
+      port: 8080,
+      max_body_bytes: 10 * 1024 * 1024,
+      idle_timeout_seconds: 0,
+    }),
+  routing: z
+    .object({
+      retries: z.number().int().min(0).max(3).default(0),
+      retry_statuses: z
+        .array(z.number().int().min(400).max(599))
+        .default([429, 500, 502, 503, 504]),
+    })
+    .default({ retries: 0, retry_statuses: [429, 500, 502, 503, 504] }),
+  providers: z.record(z.string().regex(identifier), providerSchema).refine(
+    (providers) => Object.keys(providers).length > 0,
+    "At least one provider is required.",
+  ),
+  routes: z
+    .record(
+      z.string().regex(identifier).refine((name) => !name.includes("/"), "Route aliases cannot contain '/'."),
+      z.array(z.string().min(3).max(512)).min(1),
+    )
+    .default({}),
+});
+
+export type ProviderConfig = z.infer<typeof providerSchema>;
+export type TinyRouterConfig = z.infer<typeof rawConfigSchema>;
+
+export class ConfigError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ConfigError";
+  }
+}
+
+function expandString(value: string, environment: Record<string, string | undefined>): string {
+  return value.replace(/\$\{([A-Z_][A-Z0-9_]*)(?::-(.*?))?\}/g, (_, name: string, fallback: string | undefined) => {
+    const resolved = environment[name];
+    if (resolved !== undefined && resolved !== "") return resolved;
+    if (fallback !== undefined) return fallback;
+    throw new ConfigError(`Environment variable ${name} is required by the configuration.`);
+  });
+}
+
+function expandEnvironment(value: unknown, environment: Record<string, string | undefined>): unknown {
+  if (typeof value === "string") return expandString(value, environment);
+  if (Array.isArray(value)) return value.map((item) => expandEnvironment(item, environment));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, expandEnvironment(child, environment)]),
+    );
+  }
+  return value;
+}
+
+function validateReferences(config: TinyRouterConfig): TinyRouterConfig {
+  for (const [route, targets] of Object.entries(config.routes)) {
+    for (const target of targets) {
+      const slash = target.indexOf("/");
+      if (slash < 1 || slash === target.length - 1) {
+        throw new ConfigError(`Route '${route}' has invalid target '${target}'; expected provider/model.`);
+      }
+      const providerId = target.slice(0, slash);
+      if (!(providerId in config.providers)) {
+        throw new ConfigError(`Route '${route}' references unknown provider '${providerId}'.`);
+      }
+    }
+  }
+  return config;
+}
+
+export function parseConfig(
+  source: string,
+  environment: Record<string, string | undefined> = process.env,
+): TinyRouterConfig {
+  let raw: unknown;
+  try {
+    raw = parseYaml(source);
+  } catch (error) {
+    throw new ConfigError("The configuration is not valid YAML.", { cause: error });
+  }
+
+  let expanded: unknown;
+  try {
+    expanded = expandEnvironment(raw, environment);
+  } catch (error) {
+    if (error instanceof ConfigError) throw error;
+    throw new ConfigError("Could not expand configuration environment variables.", { cause: error });
+  }
+
+  const result = rawConfigSchema.safeParse(expanded);
+  if (!result.success) {
+    const detail = result.error.issues
+      .map((issue) => `${issue.path.join(".") || "config"}: ${issue.message}`)
+      .join("; ");
+    throw new ConfigError(`Invalid configuration: ${detail}`);
+  }
+  return validateReferences(result.data);
+}
+
+export async function loadConfig(path: string): Promise<TinyRouterConfig> {
+  let source: string;
+  try {
+    source = await readFile(path, "utf8");
+  } catch (error) {
+    throw new ConfigError(`Could not read configuration file '${path}'.`, { cause: error });
+  }
+  return parseConfig(source);
+}
+
+export function redactConfig(config: TinyRouterConfig): unknown {
+  return {
+    ...config,
+    server: { ...config.server, ...(config.server.api_key === undefined ? {} : { api_key: "[redacted]" }) },
+    providers: Object.fromEntries(
+      Object.entries(config.providers).map(([id, provider]) => [
+        id,
+        { ...provider, ...(provider.api_key === undefined ? {} : { api_key: "[redacted]" }) },
+      ]),
+    ),
+  };
+}
