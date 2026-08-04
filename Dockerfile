@@ -13,7 +13,9 @@ RUN case "$TARGETARCH" in \
  && bun build src/main.ts --compile --target="$BUN_TARGET" --outfile dist/tinyrouter
 
 FROM alpine:3.22
-RUN apk add --no-cache ca-certificates
+# The musl build links against the C++ runtime; without libstdc++ the
+# executable builds fine but dies at startup on missing ABI symbols.
+RUN apk add --no-cache ca-certificates libstdc++
 ARG TARGETARCH
 COPY --from=build /app/dist/tinyrouter /usr/local/bin/tinyrouter
 USER 65532:65532

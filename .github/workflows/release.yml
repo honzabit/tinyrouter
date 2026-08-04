@@ -79,6 +79,23 @@ jobs:
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
         env:
           tag: ${{ inputs.tag || github.ref_name }}
+      # An image can build cleanly and still fail to start, so load a
+      # single-architecture build and run it before publishing anything.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: tinyrouter:candidate
+      - name: Verify the image starts
+        run: |
+          actual=$(docker run --rm tinyrouter:candidate --version)
+          expected="${tag#v}"
+          if [ "$actual" != "$expected" ]; then
+            echo "Image reports $actual, expected $expected." >&2
+            exit 1
+          fi
+        env:
+          tag: ${{ inputs.tag || github.ref_name }}
       - uses: docker/build-push-action@v6
         with:
           context: .
