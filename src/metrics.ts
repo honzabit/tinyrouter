@@ -144,9 +144,7 @@ export class Metrics {
       for (const circuit of [...circuits].sort((a, b) => a.id.localeCompare(b.id))) {
         // Healthy providers still get a series: absent is indistinguishable
         // from a scrape that never happened.
-        lines.push(
-          `tinyrouter_circuit_open{provider="${escapeLabel(circuit.id)}"} ${circuit.open ? 1 : 0}`,
-        );
+        lines.push(`tinyrouter_circuit_open{provider="${escapeLabel(circuit.id)}"} ${circuit.open ? 1 : 0}`);
       }
     }
 

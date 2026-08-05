@@ -184,6 +184,8 @@ routes:
     - local/qwen3
 ```
 
+`server.allow_origin` lists browser origins allowed to read the observability endpoints — `/`, `/healthz`, `/readyz`, `/metrics`, and `/v1/models` — so a page such as a status dashboard can be served from somewhere else. Omit it and no response carries CORS headers at all. Only exact origins are accepted: `*` and anything with a path are rejected when the configuration loads. `/v1/chat/completions` is never shared, whatever is listed. That is deliberate — `api_key` is optional, so a gateway may be running open on localhost, and a page that could reach completions cross-origin could spend your provider credit. Refusals on shared endpoints carry the headers too, so a bad key reports as `401` rather than as a CORS failure.
+
 Environment placeholders use `${NAME}`. `${NAME:-fallback}` is also supported. Configuration loading fails if a required variable is absent.
 
 The native `openai`, `anthropic`, and `gemini` provider types require `api_key`. The `openai-compatible` type does not, so it can route to local servers. Every provider accepts optional static `headers`, `base_url`, and `timeout_ms` values.

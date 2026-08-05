@@ -254,4 +254,36 @@ providers:
     expect(redacted).not.toContain("plain-value");
     expect(redacted).toContain("Authorization");
   });
+
+  test("accepts exact origins for allow_origin and rejects loose ones", () => {
+    const withOrigins = parseConfig(`
+server:
+  allow_origin: ["https://ui.example", "http://localhost:5173"]
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+`);
+    expect(withOrigins.server.allow_origin).toEqual(["https://ui.example", "http://localhost:5173"]);
+
+    const reject = (value: string) =>
+      expect(() =>
+        parseConfig(`
+server:
+  allow_origin: ["${value}"]
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+`),
+      ).toThrow(ConfigError);
+
+    // A wildcard would let any page on the internet reach a gateway that, with
+    // api_key unset, is not asking anyone for credentials.
+    reject("*");
+    // An origin has no path; accepting one would silently match more than the
+    // operator wrote.
+    reject("https://ui.example/dashboard");
+    reject("not-a-url");
+  });
 });

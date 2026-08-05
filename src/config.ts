@@ -5,6 +5,18 @@ import { filterSchema } from "./filters.ts";
 
 const identifier = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 
+// An origin is scheme://host[:port] and nothing else. A value carrying a path
+// would silently match more than the operator wrote, and `*` fails here too:
+// with api_key optional, a gateway may be answering anyone who can reach it.
+function isOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && url.origin === value;
+  } catch {
+    return false;
+  }
+}
+
 const commonProviderFields = {
   base_url: z.url().optional(),
   timeout_ms: z.number().int().positive().max(600_000).default(60_000),
@@ -55,6 +67,16 @@ const rawConfigSchema = z.strictObject({
       // Bounds the gap between request-body chunks, so a slow upload is fine
       // but one that stops arriving cannot hold a handler open indefinitely.
       body_timeout_ms: z.number().int().min(1_000).max(600_000).default(30_000),
+      // Browser origins allowed to read the observability endpoints. Absent
+      // means no response ever carries CORS headers.
+      allow_origin: z
+        .array(
+          z
+            .string()
+            .refine(isOrigin, "must be an exact origin such as https://ui.example, never '*' or a path"),
+        )
+        .min(1)
+        .optional(),
     })
     .prefault({}),
   routing: z

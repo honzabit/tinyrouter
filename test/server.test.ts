@@ -527,6 +527,105 @@ routes:
     expect(metrics).toContain('tinyrouter_circuit_open{provider="backup"} 0');
   });
 
+  test("shares observability endpoints with configured origins only", async () => {
+    const config = parseConfig(`
+server:
+  api_key: gateway-secret
+  allow_origin: ["https://ui.example"]
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    const allowed = await gateway.fetch(
+      new Request("http://test/metrics", { headers: { origin: "https://ui.example" } }),
+    );
+    expect(allowed.headers.get("access-control-allow-origin")).toBe("https://ui.example");
+    // The answer depends on Origin, so a cache must not hand one origin's
+    // response to another.
+    expect(allowed.headers.get("vary")).toContain("Origin");
+
+    const stranger = await gateway.fetch(
+      new Request("http://test/metrics", { headers: { origin: "https://evil.example" } }),
+    );
+    expect(stranger.headers.get("access-control-allow-origin")).toBeNull();
+
+    // Preflight, which is what a browser actually sends before a keyed GET.
+    const preflight = await gateway.fetch(
+      new Request("http://test/v1/models", {
+        method: "OPTIONS",
+        headers: { origin: "https://ui.example" },
+      }),
+    );
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("https://ui.example");
+    expect(preflight.headers.get("access-control-allow-headers")).toContain("authorization");
+    // Header auth, never ambient credentials.
+    expect(preflight.headers.get("access-control-allow-credentials")).toBeNull();
+
+    // A refused key must come back readable, or the browser reports a CORS
+    // failure and the operator debugs the wrong problem.
+    const refused = await gateway.fetch(
+      new Request("http://test/v1/models", { headers: { origin: "https://ui.example" } }),
+    );
+    expect(refused.status).toBe(401);
+    expect(refused.headers.get("access-control-allow-origin")).toBe("https://ui.example");
+  });
+
+  test("never shares the completions endpoint with a browser", async () => {
+    const config = parseConfig(`
+server:
+  allow_origin: ["https://ui.example"]
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    // api_key is optional, so a gateway can be open on localhost. If a page
+    // could reach completions cross-origin it could spend the operator's
+    // provider credits; the failed preflight is what stops it.
+    const preflight = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", {
+        method: "OPTIONS",
+        headers: { origin: "https://ui.example" },
+      }),
+    );
+    expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
+
+    const posted = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", {
+        method: "POST",
+        headers: { origin: "https://ui.example" },
+        body: JSON.stringify({ model: "fast", messages: [{ role: "user", content: "hi" }] }),
+      }),
+    );
+    expect(posted.status).toBe(200);
+    expect(posted.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  test("sends no CORS headers when no origin is configured", async () => {
+    const gateway = createTestGateway();
+    const response = await gateway.fetch(
+      new Request("http://test/readyz", { headers: { origin: "https://ui.example" } }),
+    );
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    expect(response.headers.get("vary")).toBeNull();
+  });
+
   test("returns an OpenAI-shaped validation error", async () => {
     const gateway = createTestGateway();
     const response = await gateway.fetch(

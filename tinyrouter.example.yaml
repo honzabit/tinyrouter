@@ -6,6 +6,11 @@ server:
   # Bounds the gap between request-body chunks: a slow upload is fine, one
   # that stops arriving is not.
   body_timeout_ms: 30000
+  # Browser origins allowed to read the observability endpoints (/, /healthz,
+  # /readyz, /metrics, /v1/models). Omitted means no response carries CORS
+  # headers at all. Exact origins only - no "*", no paths - and completions are
+  # never shared, so enabling this cannot let a page spend your provider credit.
+  # allow_origin: ["http://localhost:5173"]
 
 routing:
   retries: 0
