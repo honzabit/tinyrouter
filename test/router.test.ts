@@ -506,6 +506,9 @@ filters:
     healthy = true;
     const probe = await router.route(input, new AbortController().signal);
     expect(probe.target.providerId).toBe("down");
+    // Reading it is what makes it a recovery: the server hands the body to the
+    // client, and it is delivering one that proves the provider is back.
+    await probe.response.text();
     expect(breaker.isOpen("down")).toBe(false);
 
     // Closed for good: one later failure must not reopen it immediately.
@@ -770,6 +773,103 @@ routes:
     // costs every request a timeout - so it must not be the case it can never
     // see.
     expect(calls[0]).toBe("backup.test");
+  });
+
+  const stallingConfig = () =>
+    parseConfig(`
+routing:
+  circuit_breaker:
+    failures: 2
+    cooldown_ms: 60000
+providers:
+  stalling:
+    type: openai-compatible
+    base_url: https://stalling.test/v1
+    timeout_ms: 40
+  backup:
+    type: openai-compatible
+    base_url: https://backup.test/v1
+routes:
+  smart: [stalling/model-a, backup/model-b]
+`);
+
+  // Headers at once, one frame, then silence for as long as the client will wait.
+  const stallingResponse = () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'));
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+
+  test("a provider that answers and then stalls is demoted too", async () => {
+    const config = stallingConfig();
+    const calls: string[] = [];
+    const router = new Router(config, createAdapters(config), new Metrics(), async (request) => {
+      const host = new URL(request.url).hostname;
+      calls.push(host);
+      return host === "stalling.test" ? stallingResponse() : Response.json({ id: "ok", choices: [] });
+    });
+
+    const streamed = { ...input, stream: true };
+    for (let index = 0; index < 2; index += 1) {
+      const result = await router.route(streamed, new AbortController().signal);
+      // The client waits out the stall, which is the cost the breaker exists
+      // to stop paying on every request.
+      await result.response.text();
+    }
+    calls.length = 0;
+    const result = await router.route(streamed, new AbortController().signal);
+    await result.response.text();
+    // Prompt headers are not proof a provider works. One that never answers at
+    // all is demoted; one that answers and then hangs costs strictly more, so
+    // it cannot be the case that escapes.
+    expect(calls[0]).toBe("backup.test");
+  });
+
+  test("a delivered response clears an earlier failure", async () => {
+    const config = stallingConfig();
+    const breaker = new CircuitBreaker({ failures: 2, cooldown_ms: 60_000 });
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => Response.json({ id: "ok", choices: [] }),
+      async () => {},
+      breaker,
+    );
+
+    breaker.recordFailure("stalling");
+    const result = await router.route(input, new AbortController().signal);
+    await result.response.text();
+    breaker.recordFailure("stalling");
+    // Two failures either side of a response that actually arrived: the one
+    // before it is cleared, so this is the first, not the second.
+    expect(breaker.isOpen("stalling")).toBe(false);
+  });
+
+  test("a client that abandons a stream mid-response is not a provider failure", async () => {
+    const config = stallingConfig();
+    const breaker = new CircuitBreaker({ failures: 1, cooldown_ms: 60_000 });
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => stallingResponse(),
+      async () => {},
+      breaker,
+    );
+
+    const result = await router.route({ ...input, stream: true }, new AbortController().signal);
+    // The client reads part of the answer and closes the tab.
+    const reader = result.response.body?.getReader();
+    await reader?.read();
+    await reader?.cancel();
+    await Bun.sleep(20);
+    // A single failure would open this circuit, so leaving must record none.
+    expect(breaker.isOpen("stalling")).toBe(false);
   });
 
   test("a client that gives up during retry backoff is not a provider failure", async () => {

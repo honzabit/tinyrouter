@@ -62,13 +62,21 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 // Applies to every response with a body, streaming or not: a passthrough
 // adapter hands back the upstream body unread, so a provider can stall
 // part-way through a plain JSON response just as easily as an SSE one.
-function watchStall(response: Response, timeoutMs: number, controller: AbortController): Response {
+function watchStall(
+  response: Response,
+  timeoutMs: number,
+  controller: AbortController,
+  onStall: () => void,
+): Response {
   if (response.body === null) return response;
   const sse = (response.headers.get("content-type") ?? "").startsWith("text/event-stream");
   const body = withStallTimeout(
     response.body,
     timeoutMs,
-    () => controller.abort(new Error(`Provider sent no data for ${timeoutMs}ms.`)),
+    () => {
+      onStall();
+      controller.abort(new Error(`Provider sent no data for ${timeoutMs}ms.`));
+    },
     { sse },
   );
   return new Response(body, {
@@ -261,16 +269,39 @@ export class Router {
             // The header timeout is done, but the body is still arriving:
             // hold the provider to the same budget for every gap in it, and
             // count the tokens it reports on the way past.
-            const served = observeUsage(watchStall(normalized, adapter.timeoutMs, controller), (usage) => {
-              this.metrics.tokens(
-                { provider: target.providerId, model: target.model, kind: "prompt" },
-                usage.prompt,
-              );
-              this.metrics.tokens(
-                { provider: target.providerId, model: target.model, kind: "completion" },
-                usage.completion,
-              );
-            });
+            let stalled = false;
+            const served = observeUsage(
+              watchStall(normalized, adapter.timeoutMs, controller, () => {
+                stalled = true;
+              }),
+              (usage) => {
+                this.metrics.tokens(
+                  { provider: target.providerId, model: target.model, kind: "prompt" },
+                  usage.prompt,
+                );
+                this.metrics.tokens(
+                  { provider: target.providerId, model: target.model, kind: "completion" },
+                  usage.completion,
+                );
+              },
+              (end) => {
+                // Health is settled by the body, not the headers. A provider
+                // that answers at once and then hangs costs a client strictly
+                // more than one that never answers, so it cannot be the case
+                // that escapes being demoted. A client that leaves mid-answer
+                // proves nothing either way.
+                if (end === "cancelled") return;
+                if (end === "completed" && !stalled) {
+                  // A delivered response clears earlier failures, but not one
+                  // this same request caused: a provider whose first attempt
+                  // always fails and whose retry always works would otherwise
+                  // absolve itself every time and never be demoted.
+                  if (!blamed.has(target.providerId)) this.breaker.recordSuccess(target.providerId);
+                } else {
+                  blame(target.providerId);
+                }
+              },
+            );
             attempts.push({
               target: target.label,
               attempt: attemptNumber,
@@ -284,11 +315,6 @@ export class Router {
               model: target.model,
               status: String(upstreamResponse.status),
             });
-            // A success clears earlier failures, but not one this same request
-            // caused: a provider whose first attempt always fails and whose
-            // retry always works would otherwise absolve itself every time,
-            // and never be demoted despite costing every request that attempt.
-            if (!blamed.has(target.providerId)) this.breaker.recordSuccess(target.providerId);
             return { response: served, target, attempts, redactions: filtered.redactions };
           }
 
