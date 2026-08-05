@@ -296,7 +296,9 @@ Images are translated for both native adapters: Anthropic accepts http(s) URLs a
 
 `/readyz` verifies that configuration and provider adapters loaded. It deliberately does not send paid health-check requests to providers.
 
-`/metrics` reports request and attempt counters, plus `tinyrouter_tokens_total{provider,model,kind}` for the tokens providers report, so spend can be attributed per model without a database. Tokens are counted as the response passes through, never by altering it. Completions always report usage; a streaming request reports it only when the client asks for it with `stream_options.include_usage`, because otherwise the provider never sends it — TinyRouter reports what it observes rather than estimating.
+`/metrics` reports request and attempt counters, plus `tinyrouter_tokens_total{provider,model,kind}` for the tokens providers report, so spend can be attributed per model without a database. Tokens are counted as the response passes through, never by altering it.
+
+Completions always report usage. **A streaming request reports usage only when the client sets `stream_options.include_usage`** — without that flag the provider never sends the numbers, so there is nothing to count. TinyRouter reports what it observes rather than estimating, so enable that flag in your client if you want streaming traffic to appear in the token counters.
 
 TinyRouter logs a warning at startup when `server.api_key` is unset and the host is not loopback — that combination leaves `/v1` endpoints open to anyone who can reach the address. On SIGINT or SIGTERM it drains in-flight requests, including active streams, for up to ten seconds before closing the remaining connections.
 

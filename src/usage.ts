@@ -3,10 +3,11 @@ export interface TokenUsage {
   completion: number;
 }
 
-// Bodies are observed, never buffered whole: a completion is read through a
-// bounded window and a stream is scanned frame by frame, so a long response
-// costs the same memory as a short one.
-const MAX_BUFFERED_BYTES = 1_000_000;
+// A completion can carry `usage` anywhere in the object, so it is read through
+// a bounded window. A stream always reports usage last, so only its tail is
+// ever needed - which keeps memory flat no matter how long the stream runs.
+const MAX_COMPLETION_CHARS = 1_000_000;
+const STREAM_TAIL_CHARS = 16_384;
 
 function readUsage(value: unknown): TokenUsage | undefined {
   if (value === null || typeof value !== "object") return undefined;
@@ -18,19 +19,22 @@ function readUsage(value: unknown): TokenUsage | undefined {
   return prompt === 0 && completion === 0 ? undefined : { prompt, completion };
 }
 
-function parseUsageFrame(frame: string): TokenUsage | undefined {
-  for (const line of frame.split(/\r?\n/)) {
+// Scans every `data:` line and keeps the last usage it finds. The first line
+// of a tail is usually a fragment, which simply fails to parse.
+function lastUsageInStream(text: string): TokenUsage | undefined {
+  let found: TokenUsage | undefined;
+  for (const line of text.split(/\r?\n/)) {
     if (!line.startsWith("data:")) continue;
     const data = line.slice(5).trimStart();
     if (data === "[DONE]") continue;
     try {
       const usage = readUsage(JSON.parse(data));
-      if (usage !== undefined) return usage;
+      if (usage !== undefined) found = usage;
     } catch {
-      // A frame that is not JSON carries no usage; keep scanning.
+      // A line that is not JSON carries no usage; keep scanning.
     }
   }
-  return undefined;
+  return found;
 }
 
 // Passes the body through untouched while watching it for the usage the
@@ -42,37 +46,34 @@ export function observeUsage(response: Response, record: (usage: TokenUsage) => 
   const sse = (response.headers.get("content-type") ?? "").startsWith("text/event-stream");
   const decoder = new TextDecoder();
   let buffer = "";
-  let buffered = 0;
-  let found: TokenUsage | undefined;
+  let overflowed = false;
 
   const body = response.body.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         controller.enqueue(chunk);
-        if (buffered > MAX_BUFFERED_BYTES) return;
-        buffered += chunk.byteLength;
+        if (overflowed) return;
         buffer += decoder.decode(chunk, { stream: true });
-        if (!sse) return;
-        // Keep only the trailing partial frame so memory stays bounded.
-        const frames = buffer.split(/\r?\n\r?\n/);
-        buffer = frames.pop() ?? "";
-        for (const frame of frames) {
-          const usage = parseUsageFrame(frame);
-          if (usage !== undefined) found = usage;
+        if (sse) {
+          if (buffer.length > STREAM_TAIL_CHARS) buffer = buffer.slice(-STREAM_TAIL_CHARS);
+        } else if (buffer.length > MAX_COMPLETION_CHARS) {
+          // A completion this large is not worth holding on to; report no
+          // usage rather than growing without bound.
+          overflowed = true;
+          buffer = "";
         }
       },
       flush() {
+        if (overflowed) return;
         buffer += decoder.decode();
-        if (buffered <= MAX_BUFFERED_BYTES) {
-          if (sse) {
-            const usage = parseUsageFrame(buffer);
-            if (usage !== undefined) found = usage;
-          } else {
-            try {
-              found = readUsage(JSON.parse(buffer));
-            } catch {
-              // A truncated or non-JSON body carries no usage.
-            }
+        let found: TokenUsage | undefined;
+        if (sse) {
+          found = lastUsageInStream(buffer);
+        } else {
+          try {
+            found = readUsage(JSON.parse(buffer));
+          } catch {
+            // A truncated or non-JSON body carries no usage.
           }
         }
         if (found !== undefined) record(found);

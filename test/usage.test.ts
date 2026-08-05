@@ -53,6 +53,32 @@ describe("usage observation", () => {
     expect(usage).toEqual([{ prompt: 3, completion: 9 }]);
   });
 
+  test("reads usage from the end of a stream larger than the completion window", async () => {
+    // A stream reports usage last, so a long conversation must not outrun the
+    // scanner: only the tail of a stream is ever needed.
+    const filler = `data: {"choices":[{"delta":{"content":"${"x".repeat(900)}"}}]}\n\n`;
+    const chunks = Array.from({ length: 2_000 }, () => filler);
+    chunks.push(
+      'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":6,"total_tokens":11}}\n\n',
+    );
+    chunks.push("data: [DONE]\n\n");
+    const expected = chunks.join("");
+    expect(expected.length).toBeGreaterThan(1_000_000);
+
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+    const { body, usage } = await collect(
+      new Response(source, { headers: { "content-type": "text/event-stream" } }),
+    );
+    expect(body.length).toBe(expected.length);
+    expect(usage).toEqual([{ prompt: 5, completion: 6 }]);
+  });
+
   test("ignores malformed or partial bodies rather than throwing", async () => {
     for (const [type, body] of [
       ["application/json", '{"usage": {"prompt_tokens"'],
