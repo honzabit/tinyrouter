@@ -130,6 +130,40 @@
       /* Numbers that can no longer be refreshed must not read as current: a
          status page whose last known state looks live is worse than a blank one. */
       body.stale .panel:not(#error) { opacity: 0.45; }
+      .info {
+        width: 1.05rem;
+        height: 1.05rem;
+        margin-left: 0.35rem;
+        padding: 0;
+        border-radius: 50%;
+        border: 1px solid var(--line);
+        background: transparent;
+        color: var(--muted);
+        font: 600 0.62rem/1 ui-sans-serif, system-ui, sans-serif;
+        cursor: help;
+        vertical-align: middle;
+      }
+      .info:hover, .info:focus-visible { color: var(--accent); border-color: var(--accent); }
+      /* One shared layer on the body. A tooltip rendered inside a panel would
+         be clipped by the table's own horizontal scroll container. */
+      #tip {
+        position: fixed;
+        z-index: 20;
+        max-width: min(22rem, calc(100vw - 1.5rem));
+        padding: 0.5rem 0.65rem;
+        border-radius: 7px;
+        background: var(--ink);
+        color: var(--bg);
+        font: 400 0.8rem/1.45 ui-sans-serif, system-ui, sans-serif;
+        letter-spacing: 0;
+        text-transform: none;
+        box-shadow: 0 6px 20px rgb(0 0 0 / 0.28);
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        transition: opacity 0.12s ease;
+      }
+      #tip.on { opacity: 1; visibility: visible; }
       .hidden { display: none; }
       ul.targets { margin: 0; padding-left: 1.1rem; }
 
@@ -201,9 +235,9 @@
         <h2>Providers</h2>
         <div id="providers"><span class="muted">&mdash;</span></div>
         <p class="note">
-          A provider is <strong>cooling</strong> when the circuit breaker has demoted it to a last resort.
-          Body outcomes are counted after the status line was already sent, so a provider that answers
-          <code>200</code> and then hangs shows up as <code>stalled</code> here and nowhere else.
+          A provider is <strong>cooling</strong> when the circuit breaker has demoted it to a last resort,
+          and <strong>bad bodies</strong> counts answers that started fine and then stalled or broke.
+          Every heading explains what it counts.
         </p>
       </section>
 
@@ -246,6 +280,63 @@
         refresh();
       });
 
+      // ---- tooltips ----------------------------------------------------------
+      const tip = document.createElement("div");
+      tip.id = "tip";
+      tip.setAttribute("role", "tooltip");
+      document.body.append(tip);
+
+      // Refreshing replaces the tables wholesale, which would destroy whatever
+      // is being hovered or focused - so an explanation could not be read to
+      // the end at the default interval, and keyboard focus was thrown away
+      // with it. Scheduled refreshes wait; the Refresh button still does not.
+      let readingTip = false;
+
+      function showTip(target) {
+        // Author-written text only, but textContent regardless: nothing on this
+        // page assigns markup it did not write itself.
+        tip.textContent = target.dataset.tip;
+        tip.classList.add("on");
+        readingTip = true;
+        const anchor = target.getBoundingClientRect();
+        const box = tip.getBoundingClientRect();
+        const left = Math.min(
+          Math.max(8, anchor.left + anchor.width / 2 - box.width / 2),
+          window.innerWidth - box.width - 8,
+        );
+        // Above by default, below when there is no room - a heading near the top
+        // of the viewport would otherwise open off-screen.
+        const above = anchor.top - box.height - 8;
+        tip.style.left = `${left}px`;
+        tip.style.top = `${above < 8 ? anchor.bottom + 8 : above}px`;
+      }
+
+      const hideTip = () => {
+        readingTip = false;
+        tip.classList.remove("on");
+      };
+      const tipTarget = (event) =>
+        event.target instanceof Element ? event.target.closest("[data-tip]") : null;
+
+      // Hover for a mouse, focus for a keyboard, Escape to dismiss either.
+      document.addEventListener("pointerover", (event) => {
+        const target = tipTarget(event);
+        if (target) showTip(target);
+      });
+      document.addEventListener("pointerout", (event) => {
+        if (tipTarget(event)) hideTip();
+      });
+      document.addEventListener("focusin", (event) => {
+        const target = tipTarget(event);
+        if (target) showTip(target);
+        else hideTip();
+      });
+      document.addEventListener("focusout", hideTip);
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") hideTip();
+      });
+      window.addEventListener("scroll", hideTip, { passive: true });
+
       // ---- rendering helpers -------------------------------------------------
       // Everything below builds nodes and assigns textContent. Provider and model
       // labels reach /metrics from request bodies, so they are attacker-influenced
@@ -257,11 +348,21 @@
         return node;
       }
 
+      function info(text) {
+        const button = el("button", "info", "i");
+        button.type = "button";
+        button.dataset.tip = text;
+        // Screen readers get the explanation directly rather than the letter.
+        button.setAttribute("aria-label", text);
+        return button;
+      }
+
       function table(headers, rows) {
         const t = el("table");
         const head = el("tr");
         for (const h of headers) {
           const th = el("th", h.num ? "num" : null, h.label);
+          if (h.tip) th.append(info(h.tip));
           head.append(th);
         }
         const thead = el("thead");
@@ -341,35 +442,86 @@
       // ---- panels ------------------------------------------------------------
       function renderOverview(ready, samples) {
         const strip = el("div", "strip");
-        const stat = (k, v, className) => {
+        const stat = (k, v, className, tipText) => {
           const box = el("div", "stat");
           box.append(el("div", `n ${className || ""}`.trim(), v));
-          box.append(el("div", "k", k));
+          const key = el("div", "k", k);
+          if (tipText) key.append(info(tipText));
+          box.append(key);
           return box;
         };
-        strip.append(stat("status", ready.status, ready.status === "ready" ? "ok" : "bad"));
-        strip.append(stat("uptime", duration(scalar(samples, "tinyrouter_uptime_seconds"))));
-        strip.append(stat("in flight", num(scalar(samples, "tinyrouter_in_flight_requests"))));
+        strip.append(
+          stat(
+            "status",
+            ready.status,
+            ready.status === "ready" ? "ok" : "bad",
+            "Whether the gateway is accepting requests. It stays ready even while a provider is cooling, because a demoted provider is still tried - just last.",
+          ),
+        );
+        strip.append(
+          stat(
+            "uptime",
+            duration(scalar(samples, "tinyrouter_uptime_seconds")),
+            undefined,
+            "How long this gateway process has been running. Circuit breaker state lives in memory, so a restart starts every provider clean.",
+          ),
+        );
+        strip.append(
+          stat(
+            "in flight",
+            num(scalar(samples, "tinyrouter_in_flight_requests")),
+            undefined,
+            "Requests being handled right now. A streaming answer stops counting once its status line is sent, not when the stream ends.",
+          ),
+        );
 
         const requests = pick(samples, "tinyrouter_requests_total");
         const total = requests.reduce((sum, s) => sum + s.value, 0);
         const failed = requests
           .filter((s) => !/^2\d\d$/.test(s.labels.status || ""))
           .reduce((sum, s) => sum + s.value, 0);
-        strip.append(stat("requests", num(total)));
-        strip.append(stat("non-2xx", num(failed), failed > 0 ? "warn" : undefined));
+        strip.append(
+          stat("requests", num(total), undefined, "Requests the gateway finished, counted by the status the client received."),
+        );
+        strip.append(
+          stat(
+            "non-2xx",
+            num(failed),
+            failed > 0 ? "warn" : undefined,
+            "Requests that ended in an error status, including 499 - the client hung up before its answer arrived, which is nobody's fault.",
+          ),
+        );
 
         const breaker = ready.circuit_breaker;
         if (breaker) {
           const open = breaker.open || [];
           strip.append(
             breaker.enabled
-              ? stat("cooling", open.length ? String(open.length) : "0", open.length ? "bad" : "ok")
-              : stat("breaker", "off", "muted"),
+              ? stat(
+                  "cooling",
+                  open.length ? String(open.length) : "0",
+                  open.length ? "bad" : "ok",
+                  "Providers the circuit breaker has demoted to a last resort. They are still tried, after the healthy ones.",
+                )
+              : stat(
+                  "breaker",
+                  "off",
+                  "muted",
+                  "Circuit breaking is disabled. Set routing.circuit_breaker.failures to demote a provider that keeps failing.",
+                ),
           );
         }
         const overflow = scalar(samples, "tinyrouter_metrics_overflow_total");
-        if (overflow > 0) strip.append(stat("collapsed series", num(overflow), "warn"));
+        if (overflow > 0) {
+          strip.append(
+            stat(
+              "collapsed series",
+              num(overflow),
+              "warn",
+              "The gateway hit its cardinality cap and folded further label combinations into one bucket, so some counts below are grouped rather than exact.",
+            ),
+          );
+        }
         replace("overview", strip);
       }
 
@@ -412,12 +564,23 @@
           "providers",
           table(
             [
-              { label: "provider" },
-              { label: "circuit" },
-              { label: "models" },
-              { label: "2xx", num: true },
-              { label: "errors", num: true },
-              { label: "bad bodies", num: true },
+              { label: "provider", tip: "The provider id from your configuration file." },
+              {
+                label: "circuit",
+                tip: "Cooling means the breaker demoted this provider after that many consecutive failing requests. It closes again once the cooldown elapses, and the next request through probes it.",
+              },
+              { label: "models", tip: "Models seen on this provider since the gateway started." },
+              { label: "2xx", num: true, tip: "Attempts this provider answered successfully. One request can make several attempts." },
+              {
+                label: "errors",
+                num: true,
+                tip: "Attempts that failed, timed out, or could not connect. Retries within one request are counted separately here, but only once against the breaker.",
+              },
+              {
+                label: "bad bodies",
+                num: true,
+                tip: "Answers that started fine and then went wrong: the provider stalled part-way or dropped the connection. No status counter can show this, because the status line had already been sent.",
+              },
             ],
             rows,
           ),
@@ -450,10 +613,14 @@
           "tokens",
           table(
             [
-              { label: "target" },
-              { label: "prompt", num: true },
-              { label: "completion", num: true },
-              { label: "total", num: true },
+              { label: "target", tip: "The provider and model the tokens were reported against." },
+              {
+                label: "prompt",
+                num: true,
+                tip: "Input tokens, as the provider reported them. A streaming answer only carries usage when the client asks for it, so streams may be missing here.",
+              },
+              { label: "completion", num: true, tip: "Output tokens, as the provider reported them." },
+              { label: "total", num: true, tip: "Prompt plus completion. Counted as answers pass through; the gateway never alters them." },
             ],
             rows,
           ),
@@ -476,7 +643,19 @@
           for (const target of route.tinyrouter.targets) list.append(el("li", "mono", target));
           return [{ node: el("span", "mono", route.id) }, { node: list }];
         });
-        replace("routes", table([{ label: "alias" }, { label: "targets in order" }], rows));
+        replace(
+          "routes",
+          table(
+            [
+              { label: "alias", tip: "The model name a client asks for." },
+              {
+                label: "targets in order",
+                tip: "Tried top to bottom. A cooling provider moves to the back of this list rather than being skipped, so a request is never failed with an untried target left over.",
+              },
+            ],
+            rows,
+          ),
+        );
       }
 
       // ---- fetching ----------------------------------------------------------
@@ -570,7 +749,11 @@
       function reschedule() {
         clearInterval(timer);
         const every = Number($("every").value);
-        if (every > 0) timer = setInterval(refresh, every);
+        if (every > 0) {
+          timer = setInterval(() => {
+            if (!readingTip) refresh();
+          }, every);
+        }
       }
       $("every").addEventListener("change", reschedule);
       $("now").addEventListener("click", refresh);
