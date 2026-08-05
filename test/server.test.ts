@@ -892,6 +892,80 @@ routes:
     expect(scraped.status).toBe(200);
   });
 
+  test("records a rejected request rather than dropping it silently", async () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const config = parseConfig(`
+server:
+  api_keys:
+    alice: alice-secret
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: { log: (record) => logs.push(record as unknown as Record<string, unknown>) },
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await gateway.fetch(
+        new Request("http://test/v1/chat/completions", {
+          method: "POST",
+          headers: { authorization: `Bearer guess-${attempt}` },
+          body: JSON.stringify({ model: "fast", messages: [{ role: "user", content: "hi" }] }),
+        }),
+      );
+      expect(response.status).toBe(401);
+    }
+
+    // Someone guessing keys has to be visible, or named keys cannot be
+    // operated: a success is attributed and a failure vanishes.
+    const rejected = logs.filter((record) => record.event === "request_rejected");
+    expect(rejected.length).toBe(3);
+    expect(rejected[0]?.level).toBe("warn");
+    expect(rejected[0]?.request_id).toBeDefined();
+    // Never the credential that was presented.
+    expect(JSON.stringify(logs)).not.toContain("guess-0");
+
+    const metrics = await (await gateway.fetch(new Request("http://test/metrics"))).text();
+    expect(metrics).toContain('status="401"');
+  });
+
+  test("answers a preflight before demanding one of the named keys", async () => {
+    const config = parseConfig(`
+server:
+  protect_observability: true
+  allow_origin: ["https://ui.example"]
+  api_keys:
+    alice: alice-secret
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    // Browsers send no credentials on a preflight, so gating it would block the
+    // request that does carry one. Pinned for the named-key path too, since
+    // that is a different branch through authorize().
+    const preflight = await gateway.fetch(
+      new Request("http://test/metrics", {
+        method: "OPTIONS",
+        headers: { origin: "https://ui.example" },
+      }),
+    );
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("https://ui.example");
+  });
+
   test("returns an OpenAI-shaped validation error", async () => {
     const gateway = createTestGateway();
     const response = await gateway.fetch(

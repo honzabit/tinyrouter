@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { TinyRouterConfig } from "./config.ts";
 import { clientClosedRequest, errorResponse, GatewayError, unknownErrorResponse } from "./errors.ts";
 import type { Logger } from "./logger.ts";
@@ -16,34 +16,54 @@ interface Caller {
   client?: string;
 }
 
-function matches(presented: Buffer, secret: string): boolean {
-  const wanted = Buffer.from(secret);
-  // timingSafeEqual throws on a length mismatch, so length is compared first
-  // and is therefore observable. That is inherent here and not worth pretending
-  // otherwise: it leaks how long a key is, never which one or how close.
-  return presented.length === wanted.length && timingSafeEqual(presented, wanted);
+// Comparing digests rather than the secrets themselves. They are a fixed 32
+// bytes, so every key costs identical work and the time a rejection takes says
+// nothing - not how long the presented key was, and not how many configured
+// keys happen to share a length. Comparing the raw strings cannot do that,
+// because timingSafeEqual throws unless the lengths already match.
+const digest = (secret: string): Buffer => createHash("sha256").update(secret).digest();
+
+interface KeyTable {
+  // No key configured at all: the gateway is open and says so once, here,
+  // rather than at each place that asks.
+  open: boolean;
+  entries: Array<{ name?: string; digest: Buffer }>;
+}
+
+// Built once at construction: hashing every configured secret on every request
+// would be work repeated for a value that cannot change.
+function keyTable(server: TinyRouterConfig["server"]): KeyTable {
+  if (server.api_keys !== undefined) {
+    return {
+      open: false,
+      entries: Object.entries(server.api_keys).map(([name, secret]) => ({
+        name,
+        digest: digest(secret),
+      })),
+    };
+  }
+  if (server.api_key !== undefined) return { open: false, entries: [{ digest: digest(server.api_key) }] };
+  return { open: true, entries: [] };
 }
 
 // Returns the caller when the request may proceed, or undefined when it may
-// not. An open gateway - no key configured at all - returns an empty caller.
-function authorize(request: Request, server: TinyRouterConfig["server"]): Caller | undefined {
-  if (server.api_key === undefined && server.api_keys === undefined) return {};
+// not. An open gateway returns an empty caller.
+function authorize(request: Request, keys: KeyTable): Caller | undefined {
+  if (keys.open) return {};
   const header = request.headers.get("authorization");
   if (header === null || !header.startsWith("Bearer ")) return undefined;
-  const presented = Buffer.from(header.slice(7));
+  const presented = digest(header.slice(7));
 
-  if (server.api_keys === undefined) {
-    return server.api_key !== undefined && matches(presented, server.api_key) ? {} : undefined;
-  }
-
-  // Every key is compared, with no early exit on a hit: returning as soon as
+  // Every entry is compared, with no early exit on a hit: returning as soon as
   // one matches would make the reply arrive sooner for a key listed first,
   // which over enough requests says something about the set.
-  let found: string | undefined;
-  for (const [name, secret] of Object.entries(server.api_keys)) {
-    if (matches(presented, secret) && found === undefined) found = name;
+  let found: Caller | undefined;
+  for (const entry of keys.entries) {
+    if (timingSafeEqual(presented, entry.digest) && found === undefined) {
+      found = entry.name === undefined ? {} : { client: entry.name };
+    }
   }
-  return found === undefined ? undefined : { client: found };
+  return found;
 }
 
 function requestId(request: Request): string {
@@ -184,6 +204,7 @@ export function createGateway(
 ): Gateway {
   const metrics = new Metrics();
   const logger = options.logger ?? jsonLogger;
+  const keys = keyTable(config.server);
   const router = new Router(config, createAdapters(config), metrics, options.fetch ?? fetch);
 
   async function handle(request: Request): Promise<Response> {
@@ -223,8 +244,15 @@ export function createGateway(
       // process is alive, and a probe cannot carry a credential. / is gated
       // because it names the running version.
       (url.pathname === "/metrics" || url.pathname === "/readyz" || url.pathname === "/") &&
-      authorize(request, config.server) === undefined
+      authorize(request, keys) === undefined
     ) {
+      logger.log({
+        level: "warn",
+        event: "request_rejected",
+        request_id: id,
+        path: url.pathname,
+        error_type: "invalid_api_key",
+      });
       return withCors(
         errorResponse(
           new GatewayError({
@@ -269,8 +297,20 @@ export function createGateway(
       return withCors(Response.json({ name: "TinyRouter", version: VERSION, status: "ok" }), cors);
     }
 
-    const caller = url.pathname.startsWith("/v1/") ? authorize(request, config.server) : undefined;
+    const caller = url.pathname.startsWith("/v1/") ? authorize(request, keys) : undefined;
     if (url.pathname.startsWith("/v1/") && caller === undefined) {
+      // Never the presented credential, only that one was refused.
+      logger.log({
+        level: "warn",
+        event: "request_rejected",
+        request_id: id,
+        path: url.pathname,
+        error_type: "invalid_api_key",
+      });
+      // Counted like any other outcome, so a burst of them is visible to
+      // whatever already watches tinyrouter_requests_total.
+      metrics.requestStarted();
+      metrics.requestFinished({ provider: "none", model: "unknown", status: "401" });
       return withCors(
         errorResponse(
           new GatewayError({

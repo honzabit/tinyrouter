@@ -393,4 +393,44 @@ providers:
     // The single key keeps working exactly as before.
     expect(parseConfig(`server:\n  api_key: single${providers}`).server.api_key).toBe("single");
   });
+
+  test("refuses to let two names share one secret", () => {
+    const providers = `
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+`;
+    // Revoking alice would not revoke access while the same string still opens
+    // the door under another name - the one operation named keys exist for.
+    expect(() => parseConfig(`server:\n  api_keys:\n    alice: same\n    bob: same${providers}`)).toThrow(
+      ConfigError,
+    );
+    expect(
+      Object.keys(
+        parseConfig(`server:\n  api_keys:\n    alice: one\n    bob: two${providers}`).server.api_keys ?? {},
+      ),
+    ).toEqual(["alice", "bob"]);
+  });
+
+  test("redacts every API key while keeping the names", () => {
+    const config = parseConfig(`
+server:
+  api_keys:
+    alice: alice-secret
+    ci: ci-secret
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+    api_key: provider-secret
+`);
+    // This output exists so a configuration can be pasted into an issue.
+    const dumped = JSON.stringify(redactConfig(config));
+    expect(dumped).not.toContain("alice-secret");
+    expect(dumped).not.toContain("ci-secret");
+    expect(dumped).not.toContain("provider-secret");
+    expect(dumped).toContain("alice");
+    expect(dumped).toContain("ci");
+  });
 });

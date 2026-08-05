@@ -108,7 +108,16 @@ const rawConfigSchema = z.strictObject({
       (server) => server.api_key === undefined || server.api_keys === undefined,
       "set either server.api_key or server.api_keys, not both",
     )
-    // An empty set reads as "these callers may in" while naming nobody.
+    // Two names on one secret means revoking either revokes neither, since the
+    // string still opens the door under the other - and the request log would
+    // confidently attribute traffic to whichever came first.
+    .refine(
+      (server) =>
+        server.api_keys === undefined ||
+        new Set(Object.values(server.api_keys)).size === Object.keys(server.api_keys).length,
+      "server.api_keys must not reuse one secret across names",
+    )
+    // An empty set reads as naming who may call while naming nobody.
     .refine(
       (server) => server.api_keys === undefined || Object.keys(server.api_keys).length > 0,
       "server.api_keys must name at least one caller",
