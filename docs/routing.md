@@ -14,6 +14,8 @@ For each request TinyRouter:
 6. Stops immediately on authentication and ordinary request errors.
 7. Commits to a provider as soon as that provider returns a successful response.
 
+A target that cannot represent the request's content — an image in a form the provider does not accept, for instance — is skipped, and routing continues to the next one. That is the same rule a firing filter block follows: a target that may not receive the content says nothing about the targets after it. The request fails with `400 unsupported_content` only when no target can represent it, and a real failure from a target that was actually tried is reported ahead of it. Skipped targets appear in the attempt log with outcome `unsupported`, distinct from a filter's `blocked`.
+
 TinyRouter never switches providers after a stream has begun. Mid-stream errors remain stream errors; replaying the request against another model could duplicate output or tool calls.
 
 The response includes:

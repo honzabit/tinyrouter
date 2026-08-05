@@ -33,6 +33,8 @@ The Smoke workflow runs the same script on demand from the Actions tab, and the 
 
 Versions follow semantic versioning, with the caveat that 0.x minor bumps carry the breaking changes. Bump the minor for anything that changes the configuration schema, the routing contract, or an endpoint's shape; bump the patch for fixes.
 
+Add the release's entry to [CHANGELOG.md](../CHANGELOG.md) before bumping. The generated GitHub release notes list commits; the changelog is the curated account of what changed and what broke, and is the one a reader upgrading between versions actually needs.
+
 `package.json` is the only place the version lives — `--version` and `GET /` both read it — so a release is a version bump, a tag, and a push:
 
 ```bash

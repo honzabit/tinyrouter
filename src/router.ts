@@ -249,6 +249,7 @@ export class Router {
       }
       const redacted = filtered.redactions > 0 ? { redactions: filtered.redactions } : {};
 
+      let unsupported: GatewayError | undefined;
       for (let retry = 0; retry <= this.config.routing.retries; retry += 1) {
         const startedAt = performance.now();
         const attemptNumber = retry + 1;
@@ -265,7 +266,21 @@ export class Router {
         }, adapter.timeoutMs);
 
         try {
-          const upstreamRequest = adapter.createRequest(filtered.input, target.model, controller.signal);
+          let upstreamRequest: Request;
+          try {
+            upstreamRequest = adapter.createRequest(filtered.input, target.model, controller.signal);
+          } catch (caught) {
+            // A target that cannot represent this content is in the same
+            // position as one a filter refused: it may not receive the request,
+            // which says nothing about the targets after it. Retrying the
+            // translation would fail identically, so the whole target is
+            // skipped rather than the request being failed with a capable
+            // target still untried.
+            if (!(caught instanceof GatewayError) || caught.code !== "unsupported_content") throw caught;
+            clearTimeout(timer);
+            unsupported = caught;
+            break;
+          }
           const upstreamResponse = await this.fetchFn(upstreamRequest);
           const durationMs = Math.round(performance.now() - startedAt);
 
@@ -471,6 +486,17 @@ export class Router {
           }
           break;
         }
+      }
+
+      if (unsupported !== undefined) {
+        blockError = unsupported;
+        attempts.push({
+          target: target.label,
+          attempt: 1,
+          durationMs: 0,
+          outcome: "unsupported",
+          errorType: unsupported.type,
+        });
       }
     }
 

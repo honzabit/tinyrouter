@@ -55,7 +55,7 @@ export interface AttemptRecord {
   attempt: number;
   status?: number;
   durationMs: number;
-  outcome: "success" | "retry" | "fallback" | "error" | "blocked";
+  outcome: "success" | "retry" | "fallback" | "error" | "blocked" | "unsupported";
   errorType?: string;
   retryDelayMs?: number;
   redactions?: number;

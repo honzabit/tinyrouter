@@ -147,6 +147,7 @@ Full reference lives in [`docs/`](docs/), versioned alongside the code, so a clo
 | [Routing contract](docs/routing.md) | What TinyRouter does per request, and what each provider adapter translates |
 | [Operations](docs/operations.md) | Endpoints, metrics, the status page, shutdown, TLS |
 | [Development](docs/development.md) | Build, test, smoke against live providers, releasing |
+| [Changelog](CHANGELOG.md) | What changed in each release, and which changes broke something |
 
 The status page in [`ui/`](ui/README.md) is a single static HTML file that reads those endpoints and shows provider health, circuit state, token counts and route order.
 

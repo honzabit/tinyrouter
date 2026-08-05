@@ -1421,3 +1421,87 @@ describe("retry backoff math", () => {
     expect(retryBackoffMs({ attempt: 0, initialMs: 200, maxMs: 0, retryAfterMs: 5000, random: top })).toBe(0);
   });
 });
+
+describe("content a target cannot represent", () => {
+  const imaged = {
+    model: "smart",
+    messages: [
+      {
+        role: "user" as const,
+        content: [
+          { type: "text" as const, text: "what is in this picture?" },
+          { type: "image_url" as const, image_url: { url: "https://example.com/cat.png" } },
+        ],
+      },
+    ],
+  };
+
+  const mixedRoute = () =>
+    parseConfig(`
+providers:
+  gemini:
+    type: gemini
+    api_key: fake
+  cloud:
+    type: openai-compatible
+    base_url: https://cloud.test/v1
+routes:
+  smart: [gemini/gemini-flash-latest, cloud/gpt-5-mini]
+`);
+
+  test("skips the target and keeps routing, rather than failing the request", async () => {
+    const config = mixedRoute();
+    const contacted: string[] = [];
+    const router = new Router(config, createAdapters(config), new Metrics(), async (request) => {
+      contacted.push(new URL(request.url).hostname);
+      return Response.json({ id: "ok", choices: [] });
+    });
+
+    // Gemini takes images only as data: URIs, so it cannot represent this one.
+    // A target that may not receive the content is the same situation a filter
+    // block describes, and routing continues there.
+    const result = await router.route(imaged, new AbortController().signal);
+    expect(result.target.label).toBe("cloud/gpt-5-mini");
+    expect(contacted).toEqual(["cloud.test"]);
+    expect(result.attempts[0]?.outcome).toBe("unsupported");
+    expect(result.attempts[0]?.target).toBe("gemini/gemini-flash-latest");
+  });
+
+  test("fails naming the reason only when no target can represent it", async () => {
+    const config = parseConfig(`
+providers:
+  gemini:
+    type: gemini
+    api_key: fake
+routes:
+  smart: [gemini/gemini-flash-latest]
+`);
+    let contacted = 0;
+    const router = new Router(config, createAdapters(config), new Metrics(), async () => {
+      contacted += 1;
+      return Response.json({ id: "ok", choices: [] });
+    });
+
+    const error = (await router
+      .route(imaged, new AbortController().signal)
+      .catch((caught: unknown) => caught)) as GatewayError;
+    expect(error.status).toBe(400);
+    expect(error.code).toBe("unsupported_content");
+    expect(contacted).toBe(0);
+  });
+
+  test("reports a real provider failure ahead of a target that could not take it", async () => {
+    const config = mixedRoute();
+    const router = new Router(config, createAdapters(config), new Metrics(), async () =>
+      Response.json({ error: { message: "nope" } }, { status: 400 }),
+    );
+
+    // gemini could not represent it and cloud actually answered 400. An outage
+    // or a client error from a target that was tried outranks the one that was
+    // skipped, so nothing is disguised as an unsupported-content problem.
+    const error = (await router
+      .route(imaged, new AbortController().signal)
+      .catch((caught: unknown) => caught)) as GatewayError;
+    expect(error.code).not.toBe("unsupported_content");
+  });
+});
