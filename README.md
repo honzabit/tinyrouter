@@ -139,7 +139,7 @@ const completion = await client.chat.completions.create({
 
 ## Documentation
 
-Full reference lives in [`docs/`](docs/), so it ships in the clone and the tarball and always matches the version you have. [tinyrouter.dev](https://tinyrouter.dev) is the same material for reading online.
+Full reference lives in [`docs/`](docs/), versioned alongside the code, so a clone or a source archive describes the commit you actually have rather than whatever is newest. [tinyrouter.dev](https://tinyrouter.dev) is the same material for reading online.
 
 | Page | What is in it |
 | --- | --- |
