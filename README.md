@@ -199,7 +199,14 @@ Use `tinyrouter --check --config tinyrouter.yaml` to validate a file. `--print-c
 
 While a provider is down, every request pays its full `timeout_ms` before falling back. Setting `circuit_breaker.failures` to a positive number stops that: after that many consecutive retryable failures, a provider is skipped for `cooldown_ms` and its targets are recorded with outcome `circuit_open` instead of being contacted.
 
-It is off by default, because it is the one place where routing depends on what earlier requests did rather than only on the current one. Two rules keep it predictable: only retryable failures count, so a rejected request never marks a provider unhealthy; and open circuits are honoured only while some other target remains usable, so a request is never failed merely because everything is cooling down — the last target is attempted regardless. Any success closes the circuit immediately. Once the cooldown elapses the next request probes the provider, and a single further failure reopens it for another full cooldown. The state is in-memory and per process: nothing is persisted, and a restart starts clean.
+It is off by default, because it is the one place where routing depends on what earlier requests did rather than only on the current one. Four rules keep it predictable:
+
+- **Failing requests are counted, not failing attempts.** Retries of one request are one piece of evidence about a provider, so `retries` never changes the effective threshold.
+- **Only retryable failures count.** A provider that answers at all — including a rejection like `400` or `401` — has proved it is alive, which clears the count rather than leaving it primed.
+- **Open circuits are honoured only while some other target remains usable**, so a request is never failed merely because everything is cooling down; the last target is attempted regardless.
+- **Any success closes the circuit immediately.** Once the cooldown elapses the next request probes the provider, and a single further failure reopens it for another full cooldown.
+
+The state is in-memory and per process: nothing is persisted, and a restart starts clean. A positive `failures` requires a positive `cooldown_ms`, since a zero cooldown would skip nothing while reading as enabled.
 
 ### Request filters
 
@@ -298,7 +305,7 @@ Images are translated for both native adapters: Anthropic accepts http(s) URLs a
 
 `/metrics` reports request and attempt counters, plus `tinyrouter_tokens_total{provider,model,kind}` for the tokens providers report, so spend can be attributed per model without a database. Tokens are counted as the response passes through, never by altering it.
 
-Completions always report usage. **A streaming request reports usage only when the client sets `stream_options.include_usage`** — without that flag the provider never sends the numbers, so there is nothing to count. TinyRouter reports what it observes rather than estimating, so enable that flag in your client if you want streaming traffic to appear in the token counters.
+Completions always report usage. **A streaming request reports usage only when the client sets `stream_options.include_usage`** — without that flag the provider never sends the numbers, so there is nothing to count. TinyRouter reports what it observes rather than estimating, so enable that flag in your client if you want streaming traffic to appear in the token counters. Counts that are not whole non-negative numbers are discarded rather than recorded, and a client that disconnects mid-stream still has whatever the provider already generated counted against it.
 
 TinyRouter logs a warning at startup when `server.api_key` is unset and the host is not loopback — that combination leaves `/v1` endpoints open to anyone who can reach the address. On SIGINT or SIGTERM it drains in-flight requests, including active streams, for up to ten seconds before closing the remaining connections.
 

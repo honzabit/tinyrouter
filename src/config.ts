@@ -69,6 +69,12 @@ const rawConfigSchema = z.strictObject({
           failures: z.number().int().min(0).max(100).default(0),
           cooldown_ms: z.number().int().min(0).max(3_600_000).default(30_000),
         })
+        // A zero cooldown would make an enabled breaker skip nothing, which
+        // reads as protection while providing none.
+        .refine(
+          (breaker) => breaker.failures === 0 || breaker.cooldown_ms > 0,
+          "cooldown_ms must be positive when failures is set",
+        )
         .prefault({}),
     })
     .prefault({}),

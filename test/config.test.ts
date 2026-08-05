@@ -86,6 +86,36 @@ providers:
     ).toEqual([]);
   });
 
+  test("rejects a circuit breaker that could never open", () => {
+    // failures > 0 with a zero cooldown reads as enabled but never skips a
+    // target, which is worse than being off because it looks protective.
+    expect(() =>
+      parseConfig(`
+routing:
+  circuit_breaker:
+    failures: 3
+    cooldown_ms: 0
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+`),
+    ).toThrow(ConfigError);
+    // Disabled with a zero cooldown is meaningless but harmless.
+    expect(
+      parseConfig(`
+routing:
+  circuit_breaker:
+    failures: 0
+    cooldown_ms: 0
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+`).routing.circuit_breaker.failures,
+    ).toBe(0);
+  });
+
   test("rejects unknown built-in filter patterns", () => {
     expect(() =>
       parseConfig(`

@@ -71,7 +71,11 @@ function watchStall(response: Response, timeoutMs: number, controller: AbortCont
     () => controller.abort(new Error(`Provider sent no data for ${timeoutMs}ms.`)),
     { sse },
   );
-  return new Response(body, { status: response.status, headers: response.headers });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 function splitTarget(target: string): ResolvedTarget {
@@ -168,6 +172,15 @@ export class Router {
     // Skipping every target would fail a request that could still succeed, so
     // open circuits are only honoured while some other target remains usable.
     const anyClosed = targets.some((candidate) => !this.breaker.isOpen(candidate.providerId));
+    // The threshold counts failing requests, not failing attempts: retries of
+    // one request are one piece of evidence about a provider, so they must not
+    // trip a breaker on their own.
+    const blamed = new Set<string>();
+    const blame = (providerId: string) => {
+      if (blamed.has(providerId)) return;
+      blamed.add(providerId);
+      this.breaker.recordFailure(providerId);
+    };
 
     for (const [targetIndex, target] of targets.entries()) {
       const adapter = this.adapters.get(target.providerId);
@@ -307,9 +320,11 @@ export class Router {
             model: target.model,
             status: String(upstreamResponse.status),
           });
-          // Only retryable failures say anything about provider health; a
-          // rejected request is the client's problem, not the provider's.
-          if (canMove) this.breaker.recordFailure(target.providerId);
+          // Only retryable failures say anything about provider health. A
+          // rejected request is the client's problem, and answering at all
+          // proves the provider is alive, so it clears any earlier failures.
+          if (canMove) blame(target.providerId);
+          else this.breaker.recordSuccess(target.providerId);
           if (!canMove) throw failureWithAttempts(error, attempts);
           if (hasRetry) {
             if (backoffMs > 0) {
@@ -367,7 +382,7 @@ export class Router {
                 ? String(error.status)
                 : "network_error",
           });
-          if (canMove) this.breaker.recordFailure(target.providerId);
+          if (canMove) blame(target.providerId);
           if (!canMove) throw failureWithAttempts(error, attempts);
           if (hasRetry) {
             if (backoffMs > 0) {

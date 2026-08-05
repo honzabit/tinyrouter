@@ -3,38 +3,74 @@ export interface TokenUsage {
   completion: number;
 }
 
-// A completion can carry `usage` anywhere in the object, so it is read through
-// a bounded window. A stream always reports usage last, so only its tail is
-// ever needed - which keeps memory flat no matter how long the stream runs.
-const MAX_COMPLETION_CHARS = 1_000_000;
-const STREAM_TAIL_CHARS = 16_384;
+// Only the tail of a body is retained. Providers report usage last - at the end
+// of a completion object, and in the final frame of a stream - so this bounds
+// memory to a constant per request regardless of how much was generated, and
+// works the same for a stream and a completion.
+const TAIL_CHARS = 65_536;
 
-function readUsage(value: unknown): TokenUsage | undefined {
+// Counts arrive from a provider, which is not trusted input: a value that is
+// not a whole non-negative number would otherwise be folded into a counter it
+// poisons for the life of the process.
+function tokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : -1;
+}
+
+function toUsage(value: unknown): TokenUsage | undefined {
   if (value === null || typeof value !== "object") return undefined;
-  const usage = (value as { usage?: unknown }).usage;
-  if (usage === null || typeof usage !== "object") return undefined;
-  const record = usage as { prompt_tokens?: unknown; completion_tokens?: unknown };
-  const prompt = typeof record.prompt_tokens === "number" ? record.prompt_tokens : 0;
-  const completion = typeof record.completion_tokens === "number" ? record.completion_tokens : 0;
+  const record = value as { prompt_tokens?: unknown; completion_tokens?: unknown };
+  const prompt = tokenCount(record.prompt_tokens);
+  const completion = tokenCount(record.completion_tokens);
+  if (prompt < 0 || completion < 0) return undefined;
   return prompt === 0 && completion === 0 ? undefined : { prompt, completion };
 }
 
-// Scans every `data:` line and keeps the last usage it finds. The first line
-// of a tail is usually a fragment, which simply fails to parse.
-function lastUsageInStream(text: string): TokenUsage | undefined {
-  let found: TokenUsage | undefined;
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.startsWith("data:")) continue;
-    const data = line.slice(5).trimStart();
-    if (data === "[DONE]") continue;
-    try {
-      const usage = readUsage(JSON.parse(data));
-      if (usage !== undefined) found = usage;
-    } catch {
-      // A line that is not JSON carries no usage; keep scanning.
+// Returns the index just past the object opening at `start`, or -1 when the
+// text does not contain a complete one. String contents are skipped so a brace
+// inside a value cannot end the object early.
+function objectEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return index + 1;
     }
   }
-  return found;
+  return -1;
+}
+
+// Finds the last usable `"usage": { ... }` object in the text. Working from a
+// key rather than parsing the whole body means a stream frame, a completion,
+// and a fragment left over from an earlier chunk are all handled the same way.
+function extractUsage(text: string): TokenUsage | undefined {
+  let key = text.lastIndexOf('"usage"');
+  while (key >= 0) {
+    const open = text.indexOf("{", key);
+    if (open >= 0) {
+      const end = objectEnd(text, open);
+      if (end > 0) {
+        try {
+          const usage = toUsage(JSON.parse(text.slice(open, end)));
+          if (usage !== undefined) return usage;
+        } catch {
+          // Not a complete object; fall through to an earlier occurrence.
+        }
+      }
+    }
+    key = key === 0 ? -1 : text.lastIndexOf('"usage"', key - 1);
+  }
+  return undefined;
 }
 
 // Passes the body through untouched while watching it for the usage the
@@ -43,43 +79,42 @@ function lastUsageInStream(text: string): TokenUsage | undefined {
 // without it is reported as no usage rather than as zero.
 export function observeUsage(response: Response, record: (usage: TokenUsage) => void): Response {
   if (response.body === null) return response;
-  const sse = (response.headers.get("content-type") ?? "").startsWith("text/event-stream");
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
-  let overflowed = false;
+  let tail = "";
+  let reported = false;
 
-  const body = response.body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        controller.enqueue(chunk);
-        if (overflowed) return;
-        buffer += decoder.decode(chunk, { stream: true });
-        if (sse) {
-          if (buffer.length > STREAM_TAIL_CHARS) buffer = buffer.slice(-STREAM_TAIL_CHARS);
-        } else if (buffer.length > MAX_COMPLETION_CHARS) {
-          // A completion this large is not worth holding on to; report no
-          // usage rather than growing without bound.
-          overflowed = true;
-          buffer = "";
-        }
-      },
-      flush() {
-        if (overflowed) return;
-        buffer += decoder.decode();
-        let found: TokenUsage | undefined;
-        if (sse) {
-          found = lastUsageInStream(buffer);
-        } else {
-          try {
-            found = readUsage(JSON.parse(buffer));
-          } catch {
-            // A truncated or non-JSON body carries no usage.
-          }
-        }
-        if (found !== undefined) record(found);
-      },
-    }),
-  );
+  const report = () => {
+    if (reported) return;
+    reported = true;
+    const usage = extractUsage(tail);
+    if (usage !== undefined) record(usage);
+  };
 
-  return new Response(body, { status: response.status, headers: response.headers });
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        tail += decoder.decode();
+        report();
+        controller.close();
+        return;
+      }
+      tail += decoder.decode(value, { stream: true });
+      if (tail.length > TAIL_CHARS) tail = tail.slice(-TAIL_CHARS);
+      controller.enqueue(value);
+    },
+    cancel(reason) {
+      // The client went away, but the provider already generated - and charged
+      // for - everything seen so far, so it still counts.
+      report();
+      void reader.cancel(reason).catch(() => {});
+    },
+  });
+
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }

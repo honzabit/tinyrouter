@@ -93,6 +93,60 @@ describe("usage observation", () => {
     }
   });
 
+  test("rejects token counts that are not whole non-negative numbers", async () => {
+    for (const raw of [
+      '{"usage":{"prompt_tokens":1e999,"completion_tokens":5}}',
+      '{"usage":{"prompt_tokens":1.5,"completion_tokens":2}}',
+      '{"usage":{"prompt_tokens":-3,"completion_tokens":-4}}',
+      '{"usage":{"prompt_tokens":"12","completion_tokens":"7"}}',
+    ]) {
+      const { usage } = await collect(new Response(raw, { headers: { "content-type": "application/json" } }));
+      // A malformed count must be dropped, never folded into a counter it
+      // would poison for the life of the process.
+      expect(`${raw} -> ${JSON.stringify(usage)}`).toBe(`${raw} -> []`);
+    }
+  });
+
+  test("keeps the valid half of a partially malformed usage object", async () => {
+    const { usage } = await collect(
+      new Response('{"usage":{"prompt_tokens":1e999,"completion_tokens":6}}', {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect(usage).toEqual([]);
+  });
+
+  test("records usage when the client disconnects mid-stream", async () => {
+    const frames =
+      'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}}\n\n' +
+      'data: {"choices":[{"delta":{"content":"more"}}]}\n\n';
+    const usage: TokenUsage[] = [];
+    const observed = observeUsage(sseResponse(frames), (u) => usage.push(u));
+    const reader = observed.body?.getReader();
+    await reader?.read();
+    await reader?.cancel();
+    await Bun.sleep(20);
+    // The provider already produced - and charged for - what was seen.
+    expect(usage).toEqual([{ prompt: 9, completion: 4 }]);
+  });
+
+  test("finds usage after a single line larger than the retained tail", async () => {
+    const huge = `data: {"choices":[{"delta":{"content":"${"y".repeat(200_000)}"}}]}\n\n`;
+    const frames = `${huge}data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3}}\n\n`;
+    const { usage } = await collect(sseResponse(frames));
+    expect(usage).toEqual([{ prompt: 2, completion: 3 }]);
+  });
+
+  test("preserves status and statusText", async () => {
+    const observed = observeUsage(
+      new Response("{}", { status: 201, statusText: "Created", headers: { "x-a": "b" } }),
+      () => {},
+    );
+    expect(observed.status).toBe(201);
+    expect(observed.statusText).toBe("Created");
+    expect(observed.headers.get("x-a")).toBe("b");
+  });
+
   test("leaves a body-less response alone", async () => {
     const response = new Response(null, { status: 204 });
     expect(observeUsage(response, () => {})).toBe(response);
@@ -115,9 +169,25 @@ describe("token metrics", () => {
     );
   });
 
-  test("ignores non-positive counts", () => {
+  test("ignores non-positive and non-finite counts", () => {
     const metrics = new Metrics();
     metrics.tokens({ provider: "p", model: "m", kind: "prompt" }, 0);
+    metrics.tokens({ provider: "p", model: "m", kind: "prompt" }, Number.POSITIVE_INFINITY);
+    metrics.tokens({ provider: "p", model: "m", kind: "prompt" }, Number.NaN);
     expect(metrics.render()).not.toContain('kind="prompt"');
+  });
+
+  test("keeps the kind label when collapsing overflowing token series", () => {
+    const metrics = new Metrics();
+    for (let index = 0; index <= 1_000; index += 1) {
+      metrics.tokens({ provider: "p", model: `model-${index}`, kind: "completion" }, 2);
+    }
+    const output = metrics.render();
+    // provider and model collapse, but kind must survive so that summing by
+    // kind still accounts for the overflowed tokens.
+    expect(output).toContain(
+      'tinyrouter_tokens_total{provider="__other__",model="__other__",kind="completion"}',
+    );
+    expect(output).not.toContain('kind="overflow"');
   });
 });

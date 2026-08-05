@@ -12,8 +12,8 @@ interface TokenLabels {
 
 const MAX_SERIES_PER_COUNTER = 1_000;
 
-function labelKey(labels: CounterLabels): string {
-  return `${labels.provider}\u0000${labels.model}\u0000${labels.status}`;
+function labelKey(provider: string, model: string, third: string): string {
+  return `${provider}\u0000${model}\u0000${third}`;
 }
 
 function escapeLabel(value: string): string {
@@ -28,17 +28,23 @@ export class Metrics {
   #inFlight = 0;
   #overflow = 0;
 
-  #add(counter: Map<string, number>, labels: CounterLabels, amount: number): void {
-    let key = labelKey(labels);
+  // On overflow the high-cardinality labels collapse, but `overflowThird`
+  // lets a counter keep a label whose domain is small - token kinds stay
+  // separable so summing by kind still accounts for collapsed series.
+  #add(
+    counter: Map<string, number>,
+    provider: string,
+    model: string,
+    third: string,
+    amount: number,
+    overflowThird: string,
+  ): void {
+    let key = labelKey(provider, model, third);
     if (!counter.has(key) && counter.size >= MAX_SERIES_PER_COUNTER) {
-      key = labelKey({ provider: "__other__", model: "__other__", status: "overflow" });
+      key = labelKey("__other__", "__other__", overflowThird);
       this.#overflow += 1;
     }
     counter.set(key, (counter.get(key) ?? 0) + amount);
-  }
-
-  #increment(counter: Map<string, number>, labels: CounterLabels): void {
-    this.#add(counter, labels, 1);
   }
 
   requestStarted(): void {
@@ -47,16 +53,16 @@ export class Metrics {
 
   requestFinished(labels: CounterLabels): void {
     this.#inFlight = Math.max(0, this.#inFlight - 1);
-    this.#increment(this.#requests, labels);
+    this.#add(this.#requests, labels.provider, labels.model, labels.status, 1, "overflow");
   }
 
   attempt(labels: CounterLabels): void {
-    this.#increment(this.#attempts, labels);
+    this.#add(this.#attempts, labels.provider, labels.model, labels.status, 1, "overflow");
   }
 
   tokens(labels: TokenLabels, count: number): void {
-    if (count <= 0) return;
-    this.#add(this.#tokens, { provider: labels.provider, model: labels.model, status: labels.kind }, count);
+    if (!Number.isInteger(count) || count <= 0) return;
+    this.#add(this.#tokens, labels.provider, labels.model, labels.kind, count, labels.kind);
   }
 
   render(): string {

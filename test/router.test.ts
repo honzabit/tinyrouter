@@ -446,6 +446,98 @@ routes:
     expect(stillOpen.target.providerId).toBe("backup");
   });
 
+  test("counts one failure per request even when retries repeat it", async () => {
+    const config = parseConfig(`
+routing:
+  retries: 2
+  circuit_breaker:
+    failures: 2
+    cooldown_ms: 60000
+providers:
+  down:
+    type: openai-compatible
+    base_url: https://down.test/v1
+  backup:
+    type: openai-compatible
+    base_url: https://backup.test/v1
+routes:
+  smart: [down/model-a, backup/model-b]
+`);
+    const calls: string[] = [];
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        const host = new URL(request.url).hostname;
+        calls.push(host);
+        if (host === "down.test") return Response.json({ error: { message: "boom" } }, { status: 503 });
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
+
+    // One request makes three attempts against the dead target; that is one
+    // failing request, not three, so a threshold of two must not trip yet.
+    await router.route(input, new AbortController().signal);
+    calls.length = 0;
+    await router.route(input, new AbortController().signal);
+    expect(calls.filter((host) => host === "down.test").length).toBe(3);
+
+    // The second failing request trips it.
+    calls.length = 0;
+    await router.route(input, new AbortController().signal);
+    expect(calls).toEqual(["backup.test"]);
+  });
+
+  test("a reachable provider that rejects the request stays closed", async () => {
+    const config = parseConfig(`
+routing:
+  circuit_breaker:
+    failures: 2
+    cooldown_ms: 60000
+providers:
+  fussy:
+    type: openai-compatible
+    base_url: https://fussy.test/v1
+  backup:
+    type: openai-compatible
+    base_url: https://backup.test/v1
+routes:
+  smart: [fussy/model-a, backup/model-b]
+`);
+    let mode: "retryable" | "rejecting" = "retryable";
+    const calls: string[] = [];
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        const host = new URL(request.url).hostname;
+        calls.push(host);
+        if (host !== "fussy.test") return Response.json({ id: "ok", choices: [] });
+        return mode === "retryable"
+          ? Response.json({ error: { message: "boom" } }, { status: 503 })
+          : Response.json({ error: { message: "nope" } }, { status: 400 });
+      },
+      async () => {},
+    );
+
+    // One retryable failure leaves the count one short of the threshold.
+    await router.route(input, new AbortController().signal);
+    // Answering 400 proves the provider is alive, so it must clear that count
+    // rather than leaving it primed to open on the next unrelated blip.
+    mode = "rejecting";
+    await expect(router.route(input, new AbortController().signal)).rejects.toBeInstanceOf(GatewayError);
+    mode = "retryable";
+    await router.route(input, new AbortController().signal);
+    // Without clearing, this second retryable failure would have opened the
+    // circuit and the next request would skip straight to backup.
+    calls.length = 0;
+    await router.route(input, new AbortController().signal);
+    expect(calls[0]).toBe("fussy.test");
+  });
+
   test("attempts an open target anyway when every target is open", async () => {
     const config = parseConfig(`
 routing:
