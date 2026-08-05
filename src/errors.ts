@@ -42,6 +42,19 @@ export class GatewayError extends Error {
   }
 }
 
+// The caller gave up. Raised from both the body read and the routing loop so
+// a disconnect reports the same way whenever it happens, and is never counted
+// against the provider.
+export function clientClosedRequest(cause?: unknown): GatewayError {
+  return new GatewayError({
+    message: "The client closed the request before it completed.",
+    status: 499,
+    type: "client_closed_request",
+    code: "client_closed_request",
+    ...(cause === undefined ? {} : { cause }),
+  });
+}
+
 export function errorResponse(error: GatewayError, requestId?: string): Response {
   const body = {
     error: {

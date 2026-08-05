@@ -52,6 +52,9 @@ const rawConfigSchema = z.strictObject({
         .positive()
         .default(10 * 1024 * 1024),
       idle_timeout_seconds: z.number().int().min(0).max(255).default(0),
+      // Bounds the gap between request-body chunks, so a slow upload is fine
+      // but one that stops arriving cannot hold a handler open indefinitely.
+      body_timeout_ms: z.number().int().min(1_000).max(600_000).default(30_000),
     })
     .prefault({}),
   routing: z

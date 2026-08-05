@@ -3,6 +3,9 @@ server:
   port: 8080
   api_key: ${TINYROUTER_API_KEY}
   idle_timeout_seconds: 0
+  # Bounds the gap between request-body chunks: a slow upload is fine, one
+  # that stops arriving is not.
+  body_timeout_ms: 30000
 
 routing:
   retries: 0

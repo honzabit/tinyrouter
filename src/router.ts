@@ -1,6 +1,6 @@
 import { CircuitBreaker } from "./breaker.ts";
 import type { TinyRouterConfig } from "./config.ts";
-import { GatewayError } from "./errors.ts";
+import { clientClosedRequest, GatewayError } from "./errors.ts";
 import { createFilterChain, filtersForProvider } from "./filters.ts";
 import type { Metrics } from "./metrics.ts";
 import type { ProviderAdapter } from "./providers/provider.ts";
@@ -349,16 +349,7 @@ export class Router {
               outcome: "error",
               errorType: "client_closed_request",
             });
-            throw failureWithAttempts(
-              new GatewayError({
-                message: "The client closed the request before it completed.",
-                status: 499,
-                type: "client_closed_request",
-                code: "client_closed_request",
-                cause: caught,
-              }),
-              attempts,
-            );
+            throw failureWithAttempts(clientClosedRequest(caught), attempts);
           }
           const durationMs = Math.round(performance.now() - startedAt);
           const error =

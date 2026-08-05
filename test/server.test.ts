@@ -225,6 +225,107 @@ filters:
     expect(upstreamCalls).toBe(0);
   });
 
+  test("reports a client that disconnects mid-upload as a closed request", async () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const config = parseConfig(`
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: { log: (record) => logs.push(record as unknown as Record<string, unknown>) },
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"model":"fast","messages":'));
+        setTimeout(() => controller.error(new Error("connection reset by peer")), 5);
+      },
+    });
+    const response = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", { method: "POST", body }),
+    );
+    const payload = (await response.json()) as { error: { code?: string } };
+    // The same client action one phase later already reports 499; a disconnect
+    // while uploading must not masquerade as a gateway fault.
+    expect(response.status).toBe(499);
+    expect(payload.error.code).toBe("client_closed_request");
+    expect(logs.at(-1)?.level).toBe("warn");
+  });
+
+  test("gives up on a request body that stops arriving", async () => {
+    const config = parseConfig(`
+server:
+  body_timeout_ms: 1000
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    // A client that sends part of a body and then goes quiet without closing
+    // the connection would otherwise hold the handler open forever.
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"model":"fast","messages":'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const startedAt = performance.now();
+    const response = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", { method: "POST", body }),
+    );
+    expect(response.status).toBe(408);
+    expect(performance.now() - startedAt).toBeLessThan(5_000);
+    expect(cancelled).toBe(true);
+  });
+
+  test("accepts a body that arrives slowly but keeps arriving", async () => {
+    const config = parseConfig(`
+server:
+  body_timeout_ms: 1000
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    const parts = ['{"model":"fast",', '"messages":[{"role":"user",', '"content":"hi"}]}'];
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for (const part of parts) {
+          await Bun.sleep(120);
+          controller.enqueue(new TextEncoder().encode(part));
+        }
+        controller.close();
+      },
+    });
+    // Total time exceeds the bound; no single gap does, so it must succeed.
+    const response = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", { method: "POST", body }),
+    );
+    expect(response.status).toBe(200);
+  });
+
   test("returns an OpenAI-shaped validation error", async () => {
     const gateway = createTestGateway();
     const response = await gateway.fetch(

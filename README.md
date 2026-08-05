@@ -144,6 +144,7 @@ server:
   api_key: ${TINYROUTER_API_KEY}
   max_body_bytes: 10485760
   idle_timeout_seconds: 0
+  body_timeout_ms: 30000
 
 routing:
   retries: 0
@@ -191,7 +192,9 @@ The native `openai`, `anthropic`, and `gemini` provider types require `api_key`.
 
 `timeout_ms` bounds provider progress rather than total duration: a provider has that long to return response headers, and then that long again for each gap between chunks of the body. A response may therefore take as long as the model needs, but a provider that accepts a request and goes silent is cut loose instead of holding the connection open forever. Any byte counts as progress, including the keepalive pings providers send while a model is thinking. When a stalled response is a stream, the client receives a terminating `provider_timeout_error` event; otherwise the body simply ends. TinyRouter still never switches providers once a response has begun — a stall ends the request rather than retrying it, because the client has already received part of the answer.
 
-A client that disconnects or cancels — the stop button in a chat UI, a closed tab — ends the request with `499 client_closed_request`. That is never counted against the provider: it is not retried, not recorded as a provider attempt, and never counts toward a circuit breaker, since the provider did nothing wrong.
+A client that disconnects or cancels — the stop button in a chat UI, a closed tab — ends the request with `499 client_closed_request`, whether it happens while the request body is still arriving or while a provider is answering. That is never counted against the provider: it is not retried, not recorded as a provider attempt, and never counts toward a circuit breaker, since the provider did nothing wrong.
+
+`body_timeout_ms` bounds the gap between request-body chunks, so an upload that is merely slow keeps its request while one that stops arriving is answered with `408` instead of holding a handler open. `max_body_bytes` bounds how large a body may be; this bounds how long it may go quiet.
 
 When `retries` is greater than zero, TinyRouter waits before retrying the same target: the provider's `Retry-After` (or `retry-after-ms`) when it sends one, otherwise an exponentially growing jittered delay starting at `backoff_initial_ms`. Either way a single wait never exceeds `backoff_max_ms`, so a provider announcing a long cooldown cannot hold a client request hostage, and a disconnecting client cancels the wait. Falling back to a different target is always immediate — its capacity is unrelated to the failure that triggered the fallback. Set `backoff_max_ms: 0` to restore immediate retries.
 

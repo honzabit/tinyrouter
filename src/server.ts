@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { TinyRouterConfig } from "./config.ts";
-import { errorResponse, GatewayError, unknownErrorResponse } from "./errors.ts";
+import { clientClosedRequest, errorResponse, GatewayError, unknownErrorResponse } from "./errors.ts";
 import type { Logger } from "./logger.ts";
 import { jsonLogger } from "./logger.ts";
 import { Metrics } from "./metrics.ts";
@@ -32,7 +32,7 @@ function bodyTooLarge(maxBytes: number): GatewayError {
   });
 }
 
-async function readBody(request: Request, maxBytes: number): Promise<unknown> {
+async function readBody(request: Request, maxBytes: number, idleMs: number): Promise<unknown> {
   const declaredLength = request.headers.get("content-length");
   if (declaredLength !== null && Number(declaredLength) > maxBytes) {
     throw bodyTooLarge(maxBytes);
@@ -43,17 +43,49 @@ async function readBody(request: Request, maxBytes: number): Promise<unknown> {
   let total = 0;
   if (request.body !== null) {
     const reader = request.body.getReader();
+    // One listener for the whole body rather than one per chunk.
+    const disconnected = new Promise<"disconnected">((resolve) => {
+      if (request.signal.aborted) resolve("disconnected");
+      else request.signal.addEventListener("abort", () => resolve("disconnected"), { once: true });
+    });
     try {
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
+        // Bound the gap between chunks, not the whole upload: a slow client
+        // keeps its request, a silent one does not keep the handler.
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        const idle = new Promise<"idle">((resolve) => {
+          idleTimer = setTimeout(() => resolve("idle"), idleMs);
+        });
+        const result = await Promise.race([reader.read(), disconnected, idle]);
+        clearTimeout(idleTimer);
+
+        if (result === "disconnected") {
+          await reader.cancel(new Error("The client closed the request.")).catch(() => {});
+          throw clientClosedRequest();
+        }
+        if (result === "idle") {
+          await reader.cancel(new Error("Request body stalled.")).catch(() => {});
+          throw new GatewayError({
+            message: `The request body stopped arriving for ${idleMs}ms.`,
+            status: 408,
+            type: "invalid_request_error",
+            code: "body_timeout",
+          });
+        }
+        if (result.done) break;
+        total += result.value.byteLength;
         if (total > maxBytes) {
           await reader.cancel(new Error("Request body too large."));
           throw bodyTooLarge(maxBytes);
         }
-        chunks.push(value);
+        chunks.push(result.value);
       }
+    } catch (error) {
+      // A peer that vanishes mid-upload surfaces as a stream error. The
+      // gateway did nothing wrong, so it reports a closed request rather than
+      // a fault of its own.
+      if (error instanceof GatewayError) throw error;
+      throw clientClosedRequest(error);
     } finally {
       reader.releaseLock();
     }
@@ -150,7 +182,7 @@ export function createGateway(
     let metricModel = "unknown";
     let metricStatus = "500";
     try {
-      const raw = await readBody(request, config.server.max_body_bytes);
+      const raw = await readBody(request, config.server.max_body_bytes, config.server.body_timeout_ms);
       const parsed = chatRequestSchema.safeParse(raw);
       if (!parsed.success) {
         throw new GatewayError({
