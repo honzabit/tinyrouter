@@ -516,6 +516,89 @@ filters:
     expect(breaker.isOpen("down")).toBe(false);
   });
 
+  test("a client cancelling its own request never blames the provider", async () => {
+    const config = parseConfig(`
+routing:
+  circuit_breaker:
+    failures: 2
+    cooldown_ms: 60000
+providers:
+  healthy:
+    type: openai-compatible
+    base_url: https://healthy.test/v1
+routes:
+  smart: [healthy/model-a]
+`);
+    const breaker = new CircuitBreaker({ failures: 2, cooldown_ms: 60_000 });
+    const metrics = new Metrics();
+    const router = new Router(
+      config,
+      createAdapters(config),
+      metrics,
+      // Healthy but slow: it settles only when the request is aborted, which
+      // is what a client pressing stop causes.
+      (request) =>
+        new Promise<Response>((_resolve, reject) => {
+          request.signal.addEventListener("abort", () => reject(request.signal.reason), { once: true });
+        }),
+      async () => {},
+      breaker,
+    );
+
+    for (let index = 0; index < 2; index += 1) {
+      const client = new AbortController();
+      const pending = router.route(input, client.signal);
+      setTimeout(() => client.abort(new Error("client went away")), 5);
+      await expect(pending).rejects.toMatchObject({ status: 499, code: "client_closed_request" });
+    }
+
+    // The provider did nothing wrong, so it must not be demoted for everyone
+    // else, and its attempt counters must not show phantom failures.
+    expect(breaker.isOpen("healthy")).toBe(false);
+    expect(metrics.render()).not.toContain('provider="healthy"');
+  });
+
+  test("routes a target whose cooldown expires while the route is being ordered", async () => {
+    const config = parseConfig(`
+routing:
+  circuit_breaker:
+    failures: 1
+    cooldown_ms: 100
+providers:
+  only:
+    type: openai-compatible
+    base_url: https://only.test/v1
+routes:
+  smart: [only/model-a]
+`);
+    // A clock that ticks across the cooldown boundary: reading it more than
+    // once while ordering the route must not lose the target.
+    const ticks = [1_000, 1_099, 1_100, 1_100];
+    let tick = 0;
+    const breaker = new CircuitBreaker(
+      { failures: 1, cooldown_ms: 100 },
+      () => ticks[Math.min(tick++, ticks.length - 1)] as number,
+    );
+    breaker.recordFailure("only");
+
+    let upstreamCalls = 0;
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => {
+        upstreamCalls += 1;
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+      breaker,
+    );
+
+    const result = await router.route(input, new AbortController().signal);
+    expect(result.target.label).toBe("only/model-a");
+    expect(upstreamCalls).toBe(1);
+  });
+
   test("a server error still counts even when it is not retryable", async () => {
     const config = parseConfig(`
 routing:

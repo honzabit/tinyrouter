@@ -173,10 +173,15 @@ export class Router {
     // it. Healthy targets are tried first, so a provider that is down costs
     // nothing while another can serve - but a request is never failed with an
     // untried target left over, whatever eliminated the others.
-    const ordered = [
-      ...targets.filter((candidate) => !this.breaker.isOpen(candidate.providerId)),
-      ...targets.filter((candidate) => this.breaker.isOpen(candidate.providerId)),
-    ];
+    // Partitioned in one pass: reading the circuit twice per target would let
+    // a cooldown expiring between the reads drop it from both groups, losing a
+    // usable target entirely.
+    const healthy: ResolvedTarget[] = [];
+    const cooling: ResolvedTarget[] = [];
+    for (const candidate of targets) {
+      (this.breaker.isOpen(candidate.providerId) ? cooling : healthy).push(candidate);
+    }
+    const ordered = [...healthy, ...cooling];
     // The threshold counts failing requests, not failing attempts: retries of
     // one request are one piece of evidence about a provider, so they must not
     // trip a breaker on their own.
@@ -333,6 +338,28 @@ export class Router {
         } catch (caught) {
           clearTimeout(timer);
           if (caught instanceof GatewayError && caught.attempts !== undefined) throw caught;
+          // The caller gave up. That says nothing about the provider, so it
+          // must not be counted against its health or its attempt counters,
+          // and there is nobody left to retry or fall back for.
+          if (callerSignal.aborted && !timedOut) {
+            attempts.push({
+              target: target.label,
+              attempt: attemptNumber,
+              durationMs: Math.round(performance.now() - startedAt),
+              outcome: "error",
+              errorType: "client_closed_request",
+            });
+            throw failureWithAttempts(
+              new GatewayError({
+                message: "The client closed the request before it completed.",
+                status: 499,
+                type: "client_closed_request",
+                code: "client_closed_request",
+                cause: caught,
+              }),
+              attempts,
+            );
+          }
           const durationMs = Math.round(performance.now() - startedAt);
           const error =
             caught instanceof GatewayError

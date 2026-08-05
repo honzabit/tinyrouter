@@ -4,6 +4,7 @@ import type { AttemptRecord } from "./types.ts";
 export type ErrorType =
   | "api_error"
   | "authentication_error"
+  | "client_closed_request"
   | "invalid_request_error"
   | "model_not_found"
   | "provider_authentication_error"
