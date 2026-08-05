@@ -334,7 +334,12 @@ export class Router {
           if (hasRetry) {
             if (backoffMs > 0) {
               await this.waitFn(backoffMs, callerSignal);
-              if (callerSignal.aborted) throw failureWithAttempts(error, attempts);
+              // The client gave up while the gateway was waiting to retry. The
+              // provider's error is real and already counted against it, but it
+              // is not what became of this request.
+              if (callerSignal.aborted) {
+                throw failureWithAttempts(clientClosedRequest(error), attempts);
+              }
             }
             continue;
           }
@@ -405,7 +410,12 @@ export class Router {
           if (hasRetry) {
             if (backoffMs > 0) {
               await this.waitFn(backoffMs, callerSignal);
-              if (callerSignal.aborted) throw failureWithAttempts(error, attempts);
+              // The client gave up while the gateway was waiting to retry. The
+              // provider's error is real and already counted against it, but it
+              // is not what became of this request.
+              if (callerSignal.aborted) {
+                throw failureWithAttempts(clientClosedRequest(error), attempts);
+              }
             }
             continue;
           }

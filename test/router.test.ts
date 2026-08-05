@@ -772,6 +772,73 @@ routes:
     expect(calls[0]).toBe("backup.test");
   });
 
+  test("a client that gives up during retry backoff is not a provider failure", async () => {
+    const config = parseConfig(`
+routing:
+  retries: 1
+  backoff_initial_ms: 500
+  backoff_max_ms: 500
+providers:
+  busy:
+    type: openai-compatible
+    base_url: https://busy.test/v1
+routes:
+  smart: [busy/model-a]
+`);
+    const caller = new AbortController();
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => Response.json({ error: { message: "slow down" } }, { status: 429 }),
+      // The client hangs up while the gateway is sleeping before its retry.
+      async () => {
+        caller.abort(new Error("client went away"));
+      },
+    );
+
+    const error = (await router
+      .route(input, caller.signal)
+      .catch((caught: unknown) => caught)) as GatewayError;
+    // The identical client action during the fetch itself already reports 499.
+    // Which millisecond it lands in must not change what is reported.
+    expect(error.status).toBe(499);
+    expect(error.type).toBe("client_closed_request");
+  });
+
+  test("a client that gives up while backing off from a network error reports 499", async () => {
+    const config = parseConfig(`
+routing:
+  retries: 1
+  backoff_initial_ms: 500
+  backoff_max_ms: 500
+providers:
+  broken:
+    type: openai-compatible
+    base_url: https://broken.test/v1
+routes:
+  smart: [broken/model-a]
+`);
+    const caller = new AbortController();
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => {
+        throw new Error("connection refused");
+      },
+      async () => {
+        caller.abort(new Error("client went away"));
+      },
+    );
+
+    const error = (await router
+      .route(input, caller.signal)
+      .catch((caught: unknown) => caught)) as GatewayError;
+    expect(error.status).toBe(499);
+    expect(error.type).toBe("client_closed_request");
+  });
+
   test("attempts an open target anyway when every target is open", async () => {
     const config = parseConfig(`
 routing:
