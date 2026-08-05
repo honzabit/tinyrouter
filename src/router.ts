@@ -284,7 +284,7 @@ export class Router {
                   usage.completion,
                 );
               },
-              (end, delivered) => {
+              (end) => {
                 // The status line went out long ago, so this is the only place
                 // a stalled or broken body is visible to an operator.
                 this.metrics.responseBody({
@@ -300,13 +300,15 @@ export class Router {
                   blame(target.providerId);
                   return;
                 }
-                // Whatever reached the client is proof the provider was
-                // working, so a reader that walks away mid-answer counts the
-                // same as one that stays - people stop generations constantly,
-                // and treating that as no evidence would let strikes pile up
-                // across an unbounded stretch of healthy traffic. A client
-                // gone before the first byte really does prove nothing.
-                if (end === "cancelled" && !delivered) return;
+                // A client that leaves is not evidence either way. Content
+                // having arrived does not prove the provider was still working
+                // when the reader gave up: one that sends a token and then
+                // hangs looks exactly like one the reader simply stopped, and
+                // crediting that would clear the strikes of the provider the
+                // breaker exists to demote. The cost of being conservative is
+                // that a stream nobody finishes cannot clear an earlier
+                // failure either.
+                if (end === "cancelled") return;
                 // A delivered response clears earlier failures, but not one
                 // this same request caused: a provider whose first attempt
                 // always fails and whose retry always works would otherwise

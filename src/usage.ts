@@ -74,9 +74,7 @@ function extractUsage(text: string): TokenUsage | undefined {
 }
 
 // How a body stopped. A provider is answerable for `completed` and `failed`;
-// `cancelled` is the client's doing. `delivered` says whether any of the body
-// reached the client, which is what makes a cancelled one still evidence the
-// provider was working.
+// `cancelled` is the client's doing and is evidence of neither.
 export type StreamEnd = "completed" | "cancelled" | "failed";
 
 // Passes the body through untouched while watching it for the usage the
@@ -88,24 +86,23 @@ export type StreamEnd = "completed" | "cancelled" | "failed";
 export function observeUsage(
   response: Response,
   record: (usage: TokenUsage) => void,
-  onEnd?: (end: StreamEnd, delivered: boolean) => void,
+  onEnd?: (end: StreamEnd) => void,
 ): Response {
   if (response.body === null) {
-    onEnd?.("completed", false);
+    onEnd?.("completed");
     return response;
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let tail = "";
   let ended = false;
-  let delivered = false;
 
   const finish = (end: StreamEnd) => {
     if (ended) return;
     ended = true;
     const usage = extractUsage(tail);
     if (usage !== undefined) record(usage);
-    onEnd?.(end, delivered);
+    onEnd?.(end);
   };
 
   const body = new ReadableStream<Uint8Array>({
@@ -130,7 +127,6 @@ export function observeUsage(
       }
       tail += decoder.decode(value, { stream: true });
       if (tail.length > TAIL_CHARS) tail = tail.slice(-TAIL_CHARS);
-      delivered = true;
       controller.enqueue(value);
     },
     cancel(reason) {

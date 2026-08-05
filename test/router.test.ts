@@ -850,7 +850,7 @@ routes:
     expect(breaker.isOpen("stalling")).toBe(false);
   });
 
-  test("a stream the client abandons after content still counts as working", async () => {
+  test("a stream the client abandons records neither success nor failure", async () => {
     const config = stallingConfig();
     const breaker = new CircuitBreaker({ failures: 2, cooldown_ms: 60_000 });
     const router = new Router(
@@ -864,43 +864,21 @@ routes:
 
     breaker.recordFailure("stalling");
     const result = await router.route({ ...input, stream: true }, new AbortController().signal);
-    // The client reads part of the answer and closes the tab - the ordinary
-    // shape of interactive chat traffic, where people stop generations often.
+    // The client reads part of the answer and closes the tab.
     const reader = result.response.body?.getReader();
     await reader?.read();
     await reader?.cancel();
     await Bun.sleep(20);
-    breaker.recordFailure("stalling");
-    // Content arrived, so the provider demonstrably worked and the earlier
-    // failure is cleared. Counting this as no evidence would let strikes
-    // accumulate across an unbounded stretch of healthy traffic, which is not
-    // what consecutive failures means.
+    // Not a failure: leaving is the client's doing, so it must not push the
+    // provider toward the threshold on its own.
     expect(breaker.isOpen("stalling")).toBe(false);
-  });
-
-  test("a stream the client abandons before any content counts as nothing", async () => {
-    const config = stallingConfig();
-    const breaker = new CircuitBreaker({ failures: 2, cooldown_ms: 60_000 });
-    const router = new Router(
-      config,
-      createAdapters(config),
-      new Metrics(),
-      // Headers, then nothing the client ever sees.
-      async () =>
-        new Response(new ReadableStream<Uint8Array>({ start() {} }), {
-          headers: { "content-type": "text/event-stream" },
-        }),
-      async () => {},
-      breaker,
-    );
 
     breaker.recordFailure("stalling");
-    const result = await router.route({ ...input, stream: true }, new AbortController().signal);
-    await result.response.body?.cancel();
-    await Bun.sleep(20);
-    breaker.recordFailure("stalling");
-    // Nothing was delivered, so nothing was proved either way: the earlier
-    // failure stands and the second one opens the circuit.
+    // Nor a success. Content having arrived is not proof the provider was
+    // still working when the reader gave up - a provider that sends one token
+    // and then hangs looks exactly like this, and crediting it would clear the
+    // strikes of the very provider the breaker exists to demote. So the
+    // earlier failure stands and this one is the second.
     expect(breaker.isOpen("stalling")).toBe(true);
   });
 
