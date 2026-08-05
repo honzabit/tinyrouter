@@ -197,13 +197,13 @@ Use `tinyrouter --check --config tinyrouter.yaml` to validate a file. `--print-c
 
 ### Circuit breaking
 
-While a provider is down, every request pays its full `timeout_ms` before falling back. Setting `circuit_breaker.failures` to a positive number stops that: after that many consecutive retryable failures, a provider is skipped for `cooldown_ms` and its targets are recorded with outcome `circuit_open` instead of being contacted.
+While a provider is down, every request pays its full `timeout_ms` before falling back. Setting `circuit_breaker.failures` to a positive number stops that: after that many consecutive failing requests, a provider is demoted to a last resort for `cooldown_ms`, so healthy targets are tried first and a provider that is down usually costs nothing at all.
 
 It is off by default, because it is the one place where routing depends on what earlier requests did rather than only on the current one. Four rules keep it predictable:
 
 - **Failing requests are counted, not failing attempts.** Retries of one request are one piece of evidence about a provider, so `retries` never changes the effective threshold.
-- **Only retryable failures count.** A provider that answers at all — including a rejection like `400` or `401` — has proved it is alive, which clears the count rather than leaving it primed.
-- **Open circuits are honoured only while some other target remains usable**, so a request is never failed merely because everything is cooling down; the last target is attempted regardless.
+- **A cooling provider is demoted, never removed.** It moves to the back of the route rather than being skipped, so a request is never failed with an untried target left over — whether the other targets failed, were filtered, or were cooling too.
+- **Server errors count; client errors do not.** A `5xx` is a provider failure whether or not you retry it, while a `4xx` is the client's problem and proves the provider is alive, which clears earlier failures — though not ones this same request already recorded.
 - **Any success closes the circuit immediately.** Once the cooldown elapses the next request probes the provider, and a single further failure reopens it for another full cooldown.
 
 The state is in-memory and per process: nothing is persisted, and a restart starts clean. A positive `failures` requires a positive `cooldown_ms`, since a zero cooldown would skip nothing while reading as enabled.

@@ -169,9 +169,14 @@ export class Router {
     const filteredByProvider = new Map<string, { input: ChatCompletionRequest; redactions: number }>();
     let lastError: GatewayError | undefined;
     let blockError: GatewayError | undefined;
-    // Skipping every target would fail a request that could still succeed, so
-    // open circuits are only honoured while some other target remains usable.
-    const anyClosed = targets.some((candidate) => !this.breaker.isOpen(candidate.providerId));
+    // An open circuit demotes a target to a last resort rather than removing
+    // it. Healthy targets are tried first, so a provider that is down costs
+    // nothing while another can serve - but a request is never failed with an
+    // untried target left over, whatever eliminated the others.
+    const ordered = [
+      ...targets.filter((candidate) => !this.breaker.isOpen(candidate.providerId)),
+      ...targets.filter((candidate) => this.breaker.isOpen(candidate.providerId)),
+    ];
     // The threshold counts failing requests, not failing attempts: retries of
     // one request are one piece of evidence about a provider, so they must not
     // trip a breaker on their own.
@@ -182,19 +187,9 @@ export class Router {
       this.breaker.recordFailure(providerId);
     };
 
-    for (const [targetIndex, target] of targets.entries()) {
+    for (const [targetIndex, target] of ordered.entries()) {
       const adapter = this.adapters.get(target.providerId);
       if (adapter === undefined) continue;
-
-      if (anyClosed && this.breaker.isOpen(target.providerId)) {
-        attempts.push({
-          target: target.label,
-          attempt: 1,
-          durationMs: 0,
-          outcome: "circuit_open",
-        });
-        continue;
-      }
 
       // Filter before contacting the provider, and outside the attempt loop:
       // a block means this target may not receive this content, so the target
@@ -235,7 +230,7 @@ export class Router {
         const startedAt = performance.now();
         const attemptNumber = retry + 1;
         const hasRetry = retry < this.config.routing.retries;
-        const hasFallback = targetIndex < targets.length - 1;
+        const hasFallback = targetIndex < ordered.length - 1;
         let timedOut = false;
         const controller = new AbortController();
         if (callerSignal.aborted) controller.abort(callerSignal.reason);
@@ -320,11 +315,12 @@ export class Router {
             model: target.model,
             status: String(upstreamResponse.status),
           });
-          // Only retryable failures say anything about provider health. A
-          // rejected request is the client's problem, and answering at all
-          // proves the provider is alive, so it clears any earlier failures.
-          if (canMove) blame(target.providerId);
-          else this.breaker.recordSuccess(target.providerId);
+          // A server error is a provider failure whether or not the operator
+          // wants it retried. A 4xx is the client's problem and proves the
+          // provider is alive, so it clears earlier failures - unless this
+          // request already blamed it, which that answer does not undo.
+          if (canMove || upstreamResponse.status >= 500) blame(target.providerId);
+          else if (!blamed.has(target.providerId)) this.breaker.recordSuccess(target.providerId);
           if (!canMove) throw failureWithAttempts(error, attempts);
           if (hasRetry) {
             if (backoffMs > 0) {

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { CircuitBreaker } from "../src/breaker.ts";
 import { parseConfig } from "../src/config.ts";
 import { GatewayError } from "../src/errors.ts";
 import { Metrics } from "../src/metrics.ts";
@@ -393,13 +394,14 @@ routes:
   smart: [down/model-a, backup/model-b]
 `);
 
-  test("skips a target whose circuit is open and records why", async () => {
+  test("tries a cooling target last instead of first", async () => {
     const config = breakerConfig();
     const calls: string[] = [];
+    const metrics = new Metrics();
     const router = new Router(
       config,
       createAdapters(config),
-      new Metrics(),
+      metrics,
       async (request) => {
         const host = new URL(request.url).hostname;
         calls.push(host);
@@ -415,20 +417,41 @@ routes:
     calls.length = 0;
 
     const result = await router.route(input, new AbortController().signal);
+    // The healthy target serves, so the cooling one costs nothing at all.
     expect(calls).toEqual(["backup.test"]);
     expect(result.target.providerId).toBe("backup");
-    expect(result.attempts[0]).toMatchObject({ target: "down/model-a", outcome: "circuit_open" });
   });
 
-  test("a success closes the circuit again", async () => {
-    const config = breakerConfig();
-    let healthy = false;
+  test("still uses a cooling target when no other target can serve", async () => {
+    const config = parseConfig(`
+routing:
+  circuit_breaker:
+    failures: 1
+    cooldown_ms: 60000
+providers:
+  cloud:
+    type: openai-compatible
+    base_url: https://cloud.test/v1
+  local:
+    type: openai-compatible
+    base_url: https://local.test/v1
+routes:
+  smart: [cloud/a, local/b]
+filters:
+  - type: block
+    patterns: [email]
+    providers: [local]
+`);
+    const calls: string[] = [];
+    let cloudHealthy = false;
     const router = new Router(
       config,
       createAdapters(config),
       new Metrics(),
       async (request) => {
-        if (new URL(request.url).hostname === "down.test" && !healthy) {
+        const host = new URL(request.url).hostname;
+        calls.push(host);
+        if (host === "cloud.test" && !cloudHealthy) {
           return Response.json({ error: { message: "boom" } }, { status: 503 });
         }
         return Response.json({ id: "ok", choices: [] });
@@ -436,14 +459,93 @@ routes:
       async () => {},
     );
 
+    // Only cloud fails, so cloud's circuit opens while local's stays closed.
     await router.route(input, new AbortController().signal);
-    const failed = await router.route(input, new AbortController().signal);
-    expect(failed.target.providerId).toBe("backup");
+    cloudHealthy = true;
+    calls.length = 0;
+    const result = await router.route(
+      { model: "smart", messages: [{ role: "user", content: "a@b.co" }] },
+      new AbortController().signal,
+    );
+    // local is blocked for this content, so a cooling cloud must still be
+    // tried rather than failing a request it could serve.
+    expect(result.target.providerId).toBe("cloud");
+    expect(calls).toEqual(["cloud.test"]);
+  });
 
-    // Cooldown has not elapsed, so the breaker still skips the target.
+  test("a success closes the circuit again", async () => {
+    const config = breakerConfig();
+    let now = 1_000;
+    // A fake clock lets the cooldown elapse so the probe path is reachable.
+    const breaker = new CircuitBreaker({ failures: 2, cooldown_ms: 5_000 }, () => now);
+    let healthy = false;
+    const calls: string[] = [];
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        const host = new URL(request.url).hostname;
+        calls.push(host);
+        if (host === "down.test" && !healthy) {
+          return Response.json({ error: { message: "boom" } }, { status: 503 });
+        }
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+      breaker,
+    );
+
+    await router.route(input, new AbortController().signal);
+    await router.route(input, new AbortController().signal);
+    expect(breaker.isOpen("down")).toBe(true);
+
+    // The cooldown elapses and the provider recovers: the probe must close the
+    // circuit, not merely be allowed through once.
+    now += 5_000;
     healthy = true;
-    const stillOpen = await router.route(input, new AbortController().signal);
-    expect(stillOpen.target.providerId).toBe("backup");
+    const probe = await router.route(input, new AbortController().signal);
+    expect(probe.target.providerId).toBe("down");
+    expect(breaker.isOpen("down")).toBe(false);
+
+    // Closed for good: one later failure must not reopen it immediately.
+    healthy = false;
+    calls.length = 0;
+    await router.route(input, new AbortController().signal);
+    expect(calls[0]).toBe("down.test");
+    expect(breaker.isOpen("down")).toBe(false);
+  });
+
+  test("a server error still counts even when it is not retryable", async () => {
+    const config = parseConfig(`
+routing:
+  retry_statuses: [429]
+  circuit_breaker:
+    failures: 2
+    cooldown_ms: 60000
+providers:
+  down:
+    type: openai-compatible
+    base_url: https://down.test/v1
+routes:
+  smart: [down/model-a]
+`);
+    const breaker = new CircuitBreaker({ failures: 2, cooldown_ms: 60_000 });
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => Response.json({ error: { message: "boom" } }, { status: 500 }),
+      async () => {},
+      breaker,
+    );
+
+    // 500 is excluded from retry_statuses here, but a server error is still a
+    // provider failure and must not be read as proof of health.
+    for (let index = 0; index < 2; index += 1) {
+      await expect(router.route(input, new AbortController().signal)).rejects.toBeInstanceOf(GatewayError);
+    }
+    expect(breaker.isOpen("down")).toBe(true);
   });
 
   test("counts one failure per request even when retries repeat it", async () => {
