@@ -209,7 +209,7 @@ It is off by default, because it is the one place where routing depends on what 
 - **Failing requests are counted, not failing attempts.** Retries of one request are one piece of evidence about a provider, so `retries` never changes the effective threshold.
 - **A cooling provider is demoted, never removed.** It moves to the back of the route rather than being skipped, so a request is never failed with an untried target left over — whether the other targets failed, were filtered, or were cooling too.
 - **Server errors count; client errors do not.** A `5xx` is a provider failure whether or not you retry it, while a `4xx` is the client's problem and proves the provider is alive, which clears earlier failures — though not ones this same request already recorded.
-- **Any success closes the circuit immediately.** Once the cooldown elapses the next request probes the provider, and a single further failure reopens it for another full cooldown.
+- **A success closes the circuit, unless the same request just failed.** Once the cooldown elapses the next request probes the provider, and a single further failure reopens it for another full cooldown. A success does not erase a failure from its own request, so a provider whose first attempt always fails and whose retry always works is still demoted — that wasted attempt is exactly what the breaker is for.
 
 The state is in-memory and per process: nothing is persisted, and a restart starts clean. A positive `failures` requires a positive `cooldown_ms`, since a zero cooldown would skip nothing while reading as enabled.
 

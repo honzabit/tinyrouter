@@ -284,7 +284,11 @@ export class Router {
               model: target.model,
               status: String(upstreamResponse.status),
             });
-            this.breaker.recordSuccess(target.providerId);
+            // A success clears earlier failures, but not one this same request
+            // caused: a provider whose first attempt always fails and whose
+            // retry always works would otherwise absolve itself every time,
+            // and never be demoted despite costing every request that attempt.
+            if (!blamed.has(target.providerId)) this.breaker.recordSuccess(target.providerId);
             return { response: served, target, attempts, redactions: filtered.redactions };
           }
 

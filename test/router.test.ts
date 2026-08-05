@@ -723,6 +723,55 @@ routes:
     expect(calls[0]).toBe("fussy.test");
   });
 
+  test("a provider that only ever succeeds on its own retry still opens", async () => {
+    const config = parseConfig(`
+routing:
+  retries: 1
+  backoff_initial_ms: 0
+  backoff_max_ms: 0
+  circuit_breaker:
+    failures: 2
+    cooldown_ms: 60000
+providers:
+  flaky:
+    type: openai-compatible
+    base_url: https://flaky.test/v1
+  backup:
+    type: openai-compatible
+    base_url: https://backup.test/v1
+routes:
+  smart: [flaky/model-a, backup/model-b]
+`);
+    let flakyCalls = 0;
+    const calls: string[] = [];
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        const host = new URL(request.url).hostname;
+        calls.push(host);
+        if (host !== "flaky.test") return Response.json({ id: "ok", choices: [] });
+        flakyCalls += 1;
+        // Fails the first attempt of every request and answers the retry.
+        return flakyCalls % 2 === 1
+          ? Response.json({ error: { message: "overloaded" } }, { status: 503 })
+          : Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
+
+    await router.route(input, new AbortController().signal);
+    await router.route(input, new AbortController().signal);
+    calls.length = 0;
+    await router.route(input, new AbortController().signal);
+    // The retry succeeding does not undo the failure that preceded it. This is
+    // the case the breaker exists for - a provider whose wasted first attempt
+    // costs every request a timeout - so it must not be the case it can never
+    // see.
+    expect(calls[0]).toBe("backup.test");
+  });
+
   test("attempts an open target anyway when every target is open", async () => {
     const config = parseConfig(`
 routing:
