@@ -284,22 +284,34 @@ export class Router {
                   usage.completion,
                 );
               },
-              (end) => {
+              (end, delivered) => {
+                // The status line went out long ago, so this is the only place
+                // a stalled or broken body is visible to an operator.
+                this.metrics.responseBody({
+                  provider: target.providerId,
+                  model: target.model,
+                  outcome: end === "completed" && stalled ? "stalled" : end,
+                });
                 // Health is settled by the body, not the headers. A provider
                 // that answers at once and then hangs costs a client strictly
                 // more than one that never answers, so it cannot be the case
-                // that escapes being demoted. A client that leaves mid-answer
-                // proves nothing either way.
-                if (end === "cancelled") return;
-                if (end === "completed" && !stalled) {
-                  // A delivered response clears earlier failures, but not one
-                  // this same request caused: a provider whose first attempt
-                  // always fails and whose retry always works would otherwise
-                  // absolve itself every time and never be demoted.
-                  if (!blamed.has(target.providerId)) this.breaker.recordSuccess(target.providerId);
-                } else {
+                // that escapes being demoted.
+                if (end === "failed" || (end === "completed" && stalled)) {
                   blame(target.providerId);
+                  return;
                 }
+                // Whatever reached the client is proof the provider was
+                // working, so a reader that walks away mid-answer counts the
+                // same as one that stays - people stop generations constantly,
+                // and treating that as no evidence would let strikes pile up
+                // across an unbounded stretch of healthy traffic. A client
+                // gone before the first byte really does prove nothing.
+                if (end === "cancelled" && !delivered) return;
+                // A delivered response clears earlier failures, but not one
+                // this same request caused: a provider whose first attempt
+                // always fails and whose retry always works would otherwise
+                // absolve itself every time and never be demoted.
+                if (!blamed.has(target.providerId)) this.breaker.recordSuccess(target.providerId);
               },
             );
             attempts.push({

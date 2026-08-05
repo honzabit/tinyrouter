@@ -850,9 +850,9 @@ routes:
     expect(breaker.isOpen("stalling")).toBe(false);
   });
 
-  test("a client that abandons a stream mid-response is not a provider failure", async () => {
+  test("a stream the client abandons after content still counts as working", async () => {
     const config = stallingConfig();
-    const breaker = new CircuitBreaker({ failures: 1, cooldown_ms: 60_000 });
+    const breaker = new CircuitBreaker({ failures: 2, cooldown_ms: 60_000 });
     const router = new Router(
       config,
       createAdapters(config),
@@ -862,14 +862,99 @@ routes:
       breaker,
     );
 
+    breaker.recordFailure("stalling");
     const result = await router.route({ ...input, stream: true }, new AbortController().signal);
-    // The client reads part of the answer and closes the tab.
+    // The client reads part of the answer and closes the tab - the ordinary
+    // shape of interactive chat traffic, where people stop generations often.
     const reader = result.response.body?.getReader();
     await reader?.read();
     await reader?.cancel();
     await Bun.sleep(20);
-    // A single failure would open this circuit, so leaving must record none.
+    breaker.recordFailure("stalling");
+    // Content arrived, so the provider demonstrably worked and the earlier
+    // failure is cleared. Counting this as no evidence would let strikes
+    // accumulate across an unbounded stretch of healthy traffic, which is not
+    // what consecutive failures means.
     expect(breaker.isOpen("stalling")).toBe(false);
+  });
+
+  test("a stream the client abandons before any content counts as nothing", async () => {
+    const config = stallingConfig();
+    const breaker = new CircuitBreaker({ failures: 2, cooldown_ms: 60_000 });
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      // Headers, then nothing the client ever sees.
+      async () =>
+        new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      async () => {},
+      breaker,
+    );
+
+    breaker.recordFailure("stalling");
+    const result = await router.route({ ...input, stream: true }, new AbortController().signal);
+    await result.response.body?.cancel();
+    await Bun.sleep(20);
+    breaker.recordFailure("stalling");
+    // Nothing was delivered, so nothing was proved either way: the earlier
+    // failure stands and the second one opens the circuit.
+    expect(breaker.isOpen("stalling")).toBe(true);
+  });
+
+  test("a provider that drops the body mid-stream is demoted", async () => {
+    const config = stallingConfig();
+    const breaker = new CircuitBreaker({ failures: 1, cooldown_ms: 60_000 });
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('data: {"choices":[]}\n\n'));
+              setTimeout(() => controller.error(new Error("connection reset by peer")), 5);
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      async () => {},
+      breaker,
+    );
+
+    const result = await router.route({ ...input, stream: true }, new AbortController().signal);
+    await result.response.text().catch(() => {});
+    await Bun.sleep(20);
+    // A provider that resets every connection part-way through has failed the
+    // request as surely as one that stalls.
+    expect(breaker.isOpen("stalling")).toBe(true);
+  });
+
+  test("counts how response bodies ended, by provider", async () => {
+    const config = stallingConfig();
+    const metrics = new Metrics();
+    const router = new Router(config, createAdapters(config), metrics, async (request) =>
+      new URL(request.url).hostname === "stalling.test"
+        ? stallingResponse()
+        : Response.json({ id: "ok", choices: [] }),
+    );
+
+    const stalled = await router.route({ ...input, stream: true }, new AbortController().signal);
+    await stalled.response.text();
+    await Bun.sleep(20);
+
+    const output = metrics.render();
+    // The breaker acts on this outcome, so an operator has to be able to see
+    // it: the attempt counter only ever recorded the 200 that preceded it.
+    expect(output).toContain(
+      'tinyrouter_response_bodies_total{provider="stalling",model="model-a",outcome="stalled"} 1',
+    );
+    expect(output).toContain(
+      'tinyrouter_provider_attempts_total{provider="stalling",model="model-a",status="200"} 1',
+    );
   });
 
   test("a client that gives up during retry backoff is not a provider failure", async () => {

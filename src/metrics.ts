@@ -10,6 +10,15 @@ interface TokenLabels {
   kind: "prompt" | "completion";
 }
 
+// How a response body ended. The status line is already sent by then, so this
+// is the only place a stalled or broken body is visible: the attempt counter
+// recorded the 200 that preceded it.
+interface BodyLabels {
+  provider: string;
+  model: string;
+  outcome: "completed" | "stalled" | "failed" | "cancelled";
+}
+
 const MAX_SERIES_PER_COUNTER = 1_000;
 
 function labelKey(provider: string, model: string, third: string): string {
@@ -25,6 +34,7 @@ export class Metrics {
   #requests = new Map<string, number>();
   #attempts = new Map<string, number>();
   #tokens = new Map<string, number>();
+  #bodies = new Map<string, number>();
   #inFlight = 0;
   #overflow = 0;
 
@@ -63,6 +73,10 @@ export class Metrics {
   tokens(labels: TokenLabels, count: number): void {
     if (!Number.isInteger(count) || count <= 0) return;
     this.#add(this.#tokens, labels.provider, labels.model, labels.kind, count, labels.kind);
+  }
+
+  responseBody(labels: BodyLabels): void {
+    this.#add(this.#bodies, labels.provider, labels.model, labels.outcome, 1, labels.outcome);
   }
 
   render(): string {
@@ -106,6 +120,17 @@ export class Metrics {
       const [provider = "", model = "", kind = ""] = key.split("\u0000");
       lines.push(
         `tinyrouter_tokens_total{provider="${escapeLabel(provider)}",model="${escapeLabel(model)}",kind="${escapeLabel(kind)}"} ${value}`,
+      );
+    }
+
+    lines.push(
+      "# HELP tinyrouter_response_bodies_total How response bodies ended, after their status was already sent.",
+      "# TYPE tinyrouter_response_bodies_total counter",
+    );
+    for (const [key, value] of [...this.#bodies].sort(([a], [b]) => a.localeCompare(b))) {
+      const [provider = "", model = "", outcome = ""] = key.split("\u0000");
+      lines.push(
+        `tinyrouter_response_bodies_total{provider="${escapeLabel(provider)}",model="${escapeLabel(model)}",outcome="${escapeLabel(outcome)}"} ${value}`,
       );
     }
 
