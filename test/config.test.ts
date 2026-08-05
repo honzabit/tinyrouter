@@ -314,4 +314,24 @@ providers:
       parseConfig(build("  idle_timeout_seconds: 60\n  body_timeout_ms: 30000")).server.idle_timeout_seconds,
     ).toBe(60);
   });
+
+  test("normalises origins to the exact form a browser sends", () => {
+    const parse = (value: string) =>
+      parseConfig(`
+server:
+  allow_origin: ["${value}"]
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+`).server.allow_origin;
+
+    // What copying out of an address bar actually gives you.
+    expect(parse("https://ui.example/")).toEqual(["https://ui.example"]);
+    // Browsers send the host lowercased and drop the default port, so storing
+    // anything else would silently never match.
+    expect(parse("https://UI.example")).toEqual(["https://ui.example"]);
+    expect(parse("https://ui.example:443")).toEqual(["https://ui.example"]);
+    expect(parse("http://localhost:5173")).toEqual(["http://localhost:5173"]);
+  });
 });

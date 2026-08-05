@@ -626,6 +626,94 @@ routes:
     expect(response.headers.get("vary")).toBeNull();
   });
 
+  test("leaves OPTIONS alone for an operator who never enabled CORS", async () => {
+    const config = parseConfig(`
+server:
+  api_key: gateway-secret
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    // Preflight is answered before the auth gate, which is correct only while
+    // CORS is switched on. Off, the gate has to keep applying to every method.
+    const models = await gateway.fetch(new Request("http://test/v1/models", { method: "OPTIONS" }));
+    expect(models.status).toBe(401);
+    expect(models.headers.get("access-control-allow-methods")).toBeNull();
+
+    // And nothing about the endpoints changes for someone who never opted in.
+    const metrics = await gateway.fetch(new Request("http://test/metrics", { method: "OPTIONS" }));
+    expect(metrics.status).toBe(200);
+  });
+
+  test("admits every configured origin, not just the first", async () => {
+    const config = parseConfig(`
+server:
+  allow_origin: ["https://a.example", "http://localhost:5173"]
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    for (const origin of ["https://a.example", "http://localhost:5173"]) {
+      const response = await gateway.fetch(new Request("http://test/readyz", { headers: { origin } }));
+      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+    }
+  });
+
+  test("lets a browser read the headers it is sent, and the real status of a bad request", async () => {
+    const config = parseConfig(`
+server:
+  api_key: gateway-secret
+  allow_origin: ["https://ui.example"]
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    const models = await gateway.fetch(
+      new Request("http://test/v1/models", {
+        headers: { origin: "https://ui.example", authorization: "Bearer gateway-secret" },
+      }),
+    );
+    // x-request-id goes out on the wire, but a cross-origin page cannot read it
+    // unless it is exposed - and it is the value that ties a click to a log line.
+    expect(models.headers.get("x-request-id")).not.toBeNull();
+    expect(models.headers.get("access-control-expose-headers")).toContain("x-request-id");
+
+    // Wrong method on a shared path: the browser should see the 404, not a CORS
+    // failure that sends the developer to edit their origin list.
+    const wrongMethod = await gateway.fetch(
+      new Request("http://test/v1/models", {
+        method: "POST",
+        headers: { origin: "https://ui.example", authorization: "Bearer gateway-secret" },
+      }),
+    );
+    expect(wrongMethod.status).toBe(404);
+    expect(wrongMethod.headers.get("access-control-allow-origin")).toBe("https://ui.example");
+  });
+
   test("returns an OpenAI-shaped validation error", async () => {
     const gateway = createTestGateway();
     const response = await gateway.fetch(

@@ -36,12 +36,23 @@ function corsHeaders(request: Request, allowed: readonly string[] | undefined): 
   // must never hand one origin's copy to another.
   if (origin === null || !allowed.includes(origin)) return { vary: "Origin" };
   // Echo the exact origin that asked, never a wildcard, and never
-  // Allow-Credentials: the key travels in a header, not ambiently.
-  return { "access-control-allow-origin": origin, vary: "Origin" };
+  // Allow-Credentials: the key travels in a header, not ambiently. Without
+  // Expose-Headers a page can read only the safelisted few, so the request id
+  // that ties a click to a log line would be sent and then withheld.
+  return {
+    "access-control-allow-origin": origin,
+    "access-control-expose-headers": "x-request-id",
+    vary: "Origin",
+  };
 }
 
 function withCors(response: Response, headers: Record<string, string>): Response {
-  for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
+  for (const [name, value] of Object.entries(headers)) {
+    // Vary is a list. Replacing it would drop whatever else a response already
+    // varies on, and a shared cache would then serve one variant for all of it.
+    if (name === "vary") response.headers.append(name, value);
+    else response.headers.set(name, value);
+  }
   return response;
 }
 
@@ -152,7 +163,14 @@ export function createGateway(
     const url = new URL(request.url);
 
     const cors = corsHeaders(request, config.server.allow_origin);
-    if (request.method === "OPTIONS" && SHARED_PATHS.has(url.pathname)) {
+    // Only while CORS is switched on. Answering a preflight before the auth
+    // gate is right for a browser flow and wrong for everyone else: off, the
+    // gate has to keep applying to every method.
+    if (
+      config.server.allow_origin !== undefined &&
+      request.method === "OPTIONS" &&
+      SHARED_PATHS.has(url.pathname)
+    ) {
       return withCors(
         new Response(null, {
           status: 204,
@@ -234,14 +252,19 @@ export function createGateway(
     }
 
     if (url.pathname !== "/v1/chat/completions" || request.method !== "POST") {
-      return errorResponse(
-        new GatewayError({
-          message: "Endpoint not found.",
-          status: 404,
-          type: "invalid_request_error",
-          code: "not_found",
-        }),
-        id,
+      return withCors(
+        errorResponse(
+          new GatewayError({
+            message: "Endpoint not found.",
+            status: 404,
+            type: "invalid_request_error",
+            code: "not_found",
+          }),
+          id,
+        ),
+        // As with a refused key: a shared endpoint shares the reason it said
+        // no, or the browser reports CORS and the wrong thing gets debugged.
+        SHARED_PATHS.has(url.pathname) ? cors : {},
       );
     }
 

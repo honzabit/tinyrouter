@@ -5,16 +5,23 @@ import { filterSchema } from "./filters.ts";
 
 const identifier = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 
-// An origin is scheme://host[:port] and nothing else. A value carrying a path
-// would silently match more than the operator wrote, and `*` fails here too:
-// with api_key optional, a gateway may be answering anyone who can reach it.
-function isOrigin(value: string): boolean {
+// An origin is scheme://host[:port] and nothing else. Returns the canonical
+// form a browser would send in the Origin header - lowercased host, default
+// port dropped, no trailing slash - so a value that means the right origin
+// still matches one. A path, query or fragment is rejected rather than
+// silently discarded, since it would match more than was written, and `*`
+// fails here too: with api_key optional, a gateway may be answering anyone
+// who can reach it.
+function toOrigin(value: string): string | undefined {
+  let url: URL;
   try {
-    const url = new URL(value);
-    return (url.protocol === "http:" || url.protocol === "https:") && url.origin === value;
+    url = new URL(value);
   } catch {
-    return false;
+    return undefined;
   }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+  if (url.pathname !== "/" || url.search !== "" || url.hash !== "") return undefined;
+  return url.origin;
 }
 
 const commonProviderFields = {
@@ -73,7 +80,13 @@ const rawConfigSchema = z.strictObject({
         .array(
           z
             .string()
-            .refine(isOrigin, "must be an exact origin such as https://ui.example, never '*' or a path"),
+            .refine(
+              (value) => toOrigin(value) !== undefined,
+              "must be an origin such as https://ui.example - no path, no query, never '*'",
+            )
+            // Stored canonically, so what is compared against the Origin header
+            // is the form a browser sends rather than the form someone typed.
+            .transform((value) => toOrigin(value) ?? value),
         )
         .min(1)
         .optional(),

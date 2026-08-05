@@ -804,6 +804,30 @@ routes:
       { headers: { "content-type": "text/event-stream" } },
     );
 
+  test("circuit state follows the clock, not the last event", () => {
+    const config = stallingConfig();
+    let now = 1_000;
+    const breaker = new CircuitBreaker({ failures: 1, cooldown_ms: 5_000 }, () => now);
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => Response.json({ id: "ok", choices: [] }),
+      async () => {},
+      breaker,
+    );
+
+    breaker.recordFailure("stalling");
+    const open = () => router.circuitStates().providers.find((p) => p.id === "stalling")?.open;
+    expect(open()).toBe(true);
+
+    // Nothing happened - the cooldown merely elapsed. A circuit closes by the
+    // clock rather than by an event, so anything that cached this would keep
+    // reporting a recovered provider as cooling.
+    now += 5_000;
+    expect(open()).toBe(false);
+  });
+
   test("a provider that answers and then stalls is demoted too", async () => {
     const config = stallingConfig();
     const calls: string[] = [];
