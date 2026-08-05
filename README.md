@@ -86,6 +86,8 @@ services:
     restart: unless-stopped
 ```
 
+The image sets `TINYROUTER_HOST=0.0.0.0` for itself, because a process listening on loopback inside a container never receives a published port. The shipped example config reads that variable, so a mounted copy of it works either way; a config that hardcodes `127.0.0.1` will not.
+
 `0.1.1` pins one release, `0.1` follows its patches, and `latest` follows the newest release; prereleases are only ever published under their exact version. The image runs as a non-root user and holds nothing but the executable and CA certificates.
 
 To run from source instead, follow the quick start below.
@@ -139,9 +141,10 @@ const completion = await client.chat.completions.create({
 
 ```yaml
 server:
-  host: 0.0.0.0
+  host: ${TINYROUTER_HOST:-127.0.0.1}
   port: 8080
   api_key: ${TINYROUTER_API_KEY}
+  protect_observability: false
   max_body_bytes: 10485760
   idle_timeout_seconds: 0
   body_timeout_ms: 30000
@@ -307,8 +310,10 @@ Images are translated for both native adapters: Anthropic accepts http(s) URLs a
 | `POST /v1/chat/completions` | Configured bearer token | Inference |
 | `GET /v1/models` | Configured bearer token | Routes and referenced targets |
 | `GET /healthz` | None | Process health |
-| `GET /readyz` | None | Configuration readiness |
-| `GET /metrics` | None | Prometheus metrics |
+| `GET /readyz` | None, or `api_key` | Configuration readiness |
+| `GET /metrics` | None, or `api_key` | Prometheus metrics |
+
+`/readyz` and `/metrics` are open by default, which is the usual arrangement for a scrape target and for container probes. They are not nothing, though: together they disclose which providers you use, which models, roughly what you spend, and which provider is failing right now. `server.host` therefore defaults to `127.0.0.1`, so a fresh install is not reachable from the network until you say it should be, and `server.protect_observability: true` puts `/readyz` and `/metrics` behind `api_key` for deployments that do listen more widely. Prometheus sends the key with `authorization` in its scrape config. `/healthz` is never gated — it reports only that the process is alive, and a probe cannot carry a credential.
 
 `/readyz` verifies that configuration and provider adapters loaded. It deliberately does not send paid health-check requests to providers.
 

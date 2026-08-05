@@ -20,5 +20,9 @@ ARG TARGETARCH
 COPY --from=build /app/dist/tinyrouter /usr/local/bin/tinyrouter
 USER 65532:65532
 EXPOSE 8080
+# The gateway binds loopback by default, which inside a container means a
+# published port reaches nothing. The example config reads this variable, so
+# the image widens the bind without the operator editing their file.
+ENV TINYROUTER_HOST=0.0.0.0
 ENTRYPOINT ["/usr/local/bin/tinyrouter"]
 CMD ["--config", "/etc/tinyrouter/tinyrouter.yaml"]

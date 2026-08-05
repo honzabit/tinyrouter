@@ -62,7 +62,11 @@ const providerSchema = z.discriminatedUnion("type", [
 const rawConfigSchema = z.strictObject({
   server: z
     .strictObject({
-      host: z.string().default("0.0.0.0"),
+      // Loopback unless the operator says otherwise. Reachable from the network
+      // is a decision worth making deliberately, not one to inherit - the
+      // observability endpoints are open by default and disclose which
+      // providers you use, how much you spend, and which are failing.
+      host: z.string().default("127.0.0.1"),
       port: z.number().int().min(1).max(65_535).default(8080),
       api_key: z.string().min(1).optional(),
       max_body_bytes: z
@@ -76,6 +80,9 @@ const rawConfigSchema = z.strictObject({
       body_timeout_ms: z.number().int().min(1_000).max(600_000).default(30_000),
       // Browser origins allowed to read the observability endpoints. Absent
       // means no response ever carries CORS headers.
+      // Puts /metrics and /readyz behind api_key. /healthz stays open whatever
+      // this says, so container and orchestrator probes keep working.
+      protect_observability: z.boolean().default(false),
       allow_origin: z
         .array(
           z
@@ -91,6 +98,12 @@ const rawConfigSchema = z.strictObject({
         .min(1)
         .optional(),
     })
+    // authorized() waves everything through when api_key is unset, so the flag
+    // on its own would read as protection while providing none.
+    .refine(
+      (server) => !server.protect_observability || server.api_key !== undefined,
+      "protect_observability needs server.api_key to be set",
+    )
     // Bun closes an idle connection on its own. If it gets there first the body
     // timeout can never fire, leaving a setting that reads as protection while
     // providing none - and the client a bare close instead of its 408.

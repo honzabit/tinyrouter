@@ -184,6 +184,27 @@ export function createGateway(
       );
     }
 
+    // /healthz is never gated: it reports only that the process is alive, which
+    // discloses nothing, and probes cannot carry a credential.
+    if (
+      config.server.protect_observability &&
+      (url.pathname === "/metrics" || url.pathname === "/readyz") &&
+      !authorized(request, config.server.api_key)
+    ) {
+      return withCors(
+        errorResponse(
+          new GatewayError({
+            message: "Invalid or missing API key.",
+            status: 401,
+            type: "authentication_error",
+            code: "invalid_api_key",
+          }),
+          id,
+        ),
+        cors,
+      );
+    }
+
     if (url.pathname === "/healthz") return withCors(Response.json({ status: "ok" }), cors);
     if (url.pathname === "/readyz") {
       const circuits = router.circuitStates();

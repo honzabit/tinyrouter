@@ -1,7 +1,16 @@
 server:
-  host: 0.0.0.0
+  # Loopback by default: reachable from the network is worth deciding on
+  # deliberately. Set it to 0.0.0.0 to serve other machines. The container image
+  # sets TINYROUTER_HOST=0.0.0.0 itself, since a published port cannot reach a
+  # process listening only on loopback inside it.
+  host: ${TINYROUTER_HOST:-127.0.0.1}
   port: 8080
   api_key: ${TINYROUTER_API_KEY}
+  # /healthz, /readyz and /metrics are open by default, and disclose which
+  # providers you use, how many tokens you spend, and which are failing right
+  # now. Set this to put /readyz and /metrics behind api_key; /healthz stays
+  # open so container probes keep working.
+  protect_observability: false
   # Bun's own connection idle timeout, in seconds. 0 disables it. If set, it
   # must be longer than body_timeout_ms below, or it would close the connection
   # before that timeout could answer.

@@ -334,4 +334,37 @@ providers:
     expect(parse("https://ui.example:443")).toEqual(["https://ui.example"]);
     expect(parse("http://localhost:5173")).toEqual(["http://localhost:5173"]);
   });
+
+  test("binds loopback unless told otherwise, and lets a container say otherwise", () => {
+    const providers = `
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+`;
+    // Reachable from the network is a decision, not a default.
+    expect(parseConfig(providers).server.host).toBe("127.0.0.1");
+
+    // How the shipped example is written, so the container image can widen it
+    // with an environment variable rather than the operator editing the file.
+    const templated = `server:\n  host: \${TINYROUTER_HOST:-127.0.0.1}${providers}`;
+    expect(parseConfig(templated, {}).server.host).toBe("127.0.0.1");
+    expect(parseConfig(templated, { TINYROUTER_HOST: "0.0.0.0" }).server.host).toBe("0.0.0.0");
+  });
+
+  test("refuses to protect the observability endpoints with no key to check", () => {
+    const providers = `
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+`;
+    // authorized() waves everything through when api_key is unset, so the flag
+    // alone would read as protection while providing none.
+    expect(() => parseConfig(`server:\n  protect_observability: true${providers}`)).toThrow(ConfigError);
+    expect(
+      parseConfig(`server:\n  api_key: k\n  protect_observability: true${providers}`).server
+        .protect_observability,
+    ).toBe(true);
+  });
 });

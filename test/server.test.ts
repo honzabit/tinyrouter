@@ -714,6 +714,43 @@ routes:
     expect(wrongMethod.headers.get("access-control-allow-origin")).toBe("https://ui.example");
   });
 
+  test("optionally puts the observability endpoints behind the same key", async () => {
+    const config = parseConfig(`
+server:
+  api_key: gateway-secret
+  protect_observability: true
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    for (const path of ["/metrics", "/readyz"]) {
+      expect((await gateway.fetch(new Request(`http://test${path}`))).status).toBe(401);
+      const keyed = await gateway.fetch(
+        new Request(`http://test${path}`, { headers: { authorization: "Bearer gateway-secret" } }),
+      );
+      expect(keyed.status).toBe(200);
+    }
+
+    // Container and orchestrator probes must keep working: /healthz says only
+    // that the process is alive, which discloses nothing worth a key.
+    expect((await gateway.fetch(new Request("http://test/healthz"))).status).toBe(200);
+  });
+
+  test("leaves the observability endpoints open unless asked to protect them", async () => {
+    const gateway = createTestGateway();
+    for (const path of ["/healthz", "/readyz", "/metrics"]) {
+      expect((await gateway.fetch(new Request(`http://test${path}`))).status).toBe(200);
+    }
+  });
+
   test("returns an OpenAI-shaped validation error", async () => {
     const gateway = createTestGateway();
     const response = await gateway.fetch(
