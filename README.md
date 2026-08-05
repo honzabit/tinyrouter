@@ -19,7 +19,7 @@ It is intended to feel like **Caddy for LLM APIs**: one process, one configurati
 - Exposes health, readiness, and dependency-free Prometheus metrics
 - Runs from TypeScript with Bun or compiles into a standalone executable
 
-TinyRouter has no accounts, billing, credits, database, Redis, dashboard, semantic router, or background control plane.
+TinyRouter has no accounts, billing, credits, database, Redis, semantic router, or background control plane. The gateway serves no dashboard either — the optional status page in [`ui/`](ui/README.md) is a static file that reads the same public endpoints anyone else could, compiled into nothing and imported by nothing.
 
 ## When to use TinyRouter
 
@@ -315,6 +315,8 @@ Images are translated for both native adapters: Anthropic accepts http(s) URLs a
 `/metrics` reports request and attempt counters, plus `tinyrouter_tokens_total{provider,model,kind}` for the tokens providers report, so spend can be attributed per model without a database. Tokens are counted as the response passes through, never by altering it.
 
 `tinyrouter_response_bodies_total{provider,model,outcome}` records how each response body ended — `completed`, `stalled`, `failed`, or `cancelled`. The status line is sent before any of that is known, so a provider that answers `200` and then hangs looks healthy in the request and attempt counters; this is where that shows up, and it is the same signal the circuit breaker acts on.
+
+`ui/` holds a single-file status page that reads these endpoints and shows provider health, circuit state, token counts and route order. It is a static HTML file with no build step and no dependencies, compiled into nothing and imported by nothing — see [ui/README.md](ui/README.md). It needs `server.allow_origin` set, and no API key for anything but the route list.
 
 `tinyrouter_circuit_open{provider}` is `1` while the breaker has a provider demoted and `0` otherwise, read from the breaker at scrape time rather than stored — a circuit closes when its cooldown elapses, not on an event. Every configured provider gets a series, since an absent one is indistinguishable from a scrape that never happened. `/readyz` carries the same state as `circuit_breaker: { enabled, open: [...] }` for a quick look without a scraper. Readiness itself stays `ready` while a provider is cooling: demoted is not removed, the gateway still serves, and flipping it would pull the process out of rotation over something that is not an outage.
 

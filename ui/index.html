@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TinyRouter status</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #fbfbfa;
+        --panel: #ffffff;
+        --line: #e4e2dd;
+        --ink: #1b1a17;
+        --muted: #6b6862;
+        --ok: #2f7d4f;
+        --warn: #b3761b;
+        --bad: #b3402f;
+        --accent: #3d5a80;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16171a;
+          --panel: #1d1f23;
+          --line: #2e3138;
+          --ink: #e8e6e1;
+          --muted: #999691;
+          --ok: #6fbf8b;
+          --warn: #d9a441;
+          --bad: #e2705c;
+          --accent: #8fb0d9;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 1.5rem 1.25rem 3rem;
+        background: var(--bg);
+        color: var(--ink);
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { max-width: 60rem; margin: 0 auto; }
+      h1 { font-size: 1.25rem; margin: 0; letter-spacing: -0.01em; }
+      h2 {
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--muted);
+        margin: 0 0 0.75rem;
+        font-weight: 600;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        margin-bottom: 1.25rem;
+      }
+      header .grow { flex: 1 1 auto; }
+      input, button, select {
+        font: inherit;
+        padding: 0.4rem 0.6rem;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--ink);
+      }
+      input { min-width: 14rem; }
+      button { cursor: pointer; }
+      button:hover { border-color: var(--accent); }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 1rem 1.1rem;
+        margin-bottom: 1rem;
+      }
+      .strip { display: flex; flex-wrap: wrap; gap: 1.75rem; }
+      .stat .n { font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+      .stat .k { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 0.4rem 0.6rem 0.4rem 0; border-bottom: 1px solid var(--line); }
+      th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+      tr:last-child td { border-bottom: none; }
+      td.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 0; }
+      code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.86em; }
+      .pill {
+        display: inline-block;
+        padding: 0.1rem 0.5rem;
+        border-radius: 99px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        border: 1px solid currentColor;
+      }
+      .ok { color: var(--ok); }
+      .warn { color: var(--warn); }
+      .bad { color: var(--bad); }
+      .muted { color: var(--muted); }
+      .note { color: var(--muted); font-size: 0.85rem; margin: 0.5rem 0 0; }
+      #error { border-color: var(--bad); }
+      #error h2 { color: var(--bad); }
+      /* Numbers that can no longer be refreshed must not read as current: a
+         status page whose last known state looks live is worse than a blank one. */
+      body.stale .panel:not(#error) { opacity: 0.45; }
+      .hidden { display: none; }
+      ul.targets { margin: 0; padding-left: 1.1rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>TinyRouter</h1>
+        <span class="grow"></span>
+        <input id="url" type="url" spellcheck="false" placeholder="http://localhost:8080" />
+        <input id="key" type="password" spellcheck="false" placeholder="API key (routes only)" />
+        <select id="every" title="Refresh interval">
+          <option value="0">Paused</option>
+          <option value="2000">2s</option>
+          <option value="5000" selected>5s</option>
+          <option value="15000">15s</option>
+        </select>
+        <button id="now" type="button">Refresh</button>
+      </header>
+
+      <section class="panel hidden" id="error">
+        <h2>Cannot read the gateway</h2>
+        <p id="error-body" class="mono"></p>
+        <p class="note" id="error-hint"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Gateway</h2>
+        <div class="strip" id="overview"><span class="muted">Not connected yet.</span></div>
+      </section>
+
+      <section class="panel">
+        <h2>Providers</h2>
+        <div id="providers"><span class="muted">&mdash;</span></div>
+        <p class="note">
+          A provider is <strong>cooling</strong> when the circuit breaker has demoted it to a last resort.
+          Body outcomes are counted after the status line was already sent, so a provider that answers
+          <code>200</code> and then hangs shows up as <code>stalled</code> here and nowhere else.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>Tokens</h2>
+        <div id="tokens"><span class="muted">&mdash;</span></div>
+      </section>
+
+      <section class="panel">
+        <h2>Routes</h2>
+        <div id="routes"><span class="muted">&mdash;</span></div>
+        <p class="note" id="routes-note"></p>
+      </section>
+
+      <p class="note">
+        Reads <code>/readyz</code>, <code>/metrics</code> and <code>/v1/models</code>. Nothing is sent anywhere
+        else, and the page holds no state but the gateway address. Only the routes list needs an API key;
+        health and metrics are unauthenticated on the gateway.
+      </p>
+    </main>
+
+    <script>
+      "use strict";
+
+      const $ = (id) => document.getElementById(id);
+      const urlBox = $("url");
+      const keyBox = $("key");
+
+      urlBox.value = localStorage.getItem("tinyrouter.url") || "http://localhost:8080";
+      // Session, not local: the key is a credential, and a closed tab should not
+      // leave it behind on a shared machine.
+      keyBox.value = sessionStorage.getItem("tinyrouter.key") || "";
+
+      urlBox.addEventListener("change", () => {
+        localStorage.setItem("tinyrouter.url", urlBox.value.trim());
+        refresh();
+      });
+      keyBox.addEventListener("change", () => {
+        sessionStorage.setItem("tinyrouter.key", keyBox.value);
+        refresh();
+      });
+
+      // ---- rendering helpers -------------------------------------------------
+      // Everything below builds nodes and assigns textContent. Provider and model
+      // labels reach /metrics from request bodies, so they are attacker-influenced
+      // text; innerHTML anywhere here would be an injection point.
+      function el(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function table(headers, rows) {
+        const t = el("table");
+        const head = el("tr");
+        for (const h of headers) {
+          const th = el("th", h.num ? "num" : null, h.label);
+          head.append(th);
+        }
+        const thead = el("thead");
+        thead.append(head);
+        t.append(thead);
+        const body = el("tbody");
+        for (const row of rows) {
+          const tr = el("tr");
+          for (const cell of row) {
+            const td = el("td", cell.num ? "num" : cell.className || null);
+            if (cell.node) td.append(cell.node);
+            else td.textContent = cell.text;
+            tr.append(td);
+          }
+          body.append(tr);
+        }
+        t.append(body);
+        return t;
+      }
+
+      function replace(target, node) {
+        const host = $(target);
+        host.replaceChildren(node);
+      }
+
+      const nf = new Intl.NumberFormat();
+      const num = (n) => nf.format(n);
+
+      function duration(seconds) {
+        if (seconds < 60) return `${seconds}s`;
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+        return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+      }
+
+      // ---- Prometheus text parsing ------------------------------------------
+      function parseMetrics(text) {
+        const samples = [];
+        for (const raw of text.split("\n")) {
+          const line = raw.trim();
+          if (line === "" || line.startsWith("#")) continue;
+          const brace = line.indexOf("{");
+          if (brace === -1) {
+            const gap = line.lastIndexOf(" ");
+            if (gap === -1) continue;
+            samples.push({ name: line.slice(0, gap), labels: {}, value: Number(line.slice(gap + 1)) });
+            continue;
+          }
+          const close = line.lastIndexOf("}");
+          if (close < brace) continue;
+          const labels = {};
+          const pattern = /([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"/g;
+          for (const match of line.slice(brace + 1, close).matchAll(pattern)) {
+            // One pass, so an escaped backslash cannot be re-read as an escape.
+            labels[match[1]] = match[2].replace(/\\(.)/g, (_, c) => (c === "n" ? "\n" : c));
+          }
+          samples.push({
+            name: line.slice(0, brace),
+            labels,
+            value: Number(line.slice(close + 1)),
+          });
+        }
+        return samples;
+      }
+
+      const pick = (samples, name) => samples.filter((s) => s.name === name);
+      const scalar = (samples, name) => {
+        const found = samples.find((s) => s.name === name);
+        return found ? found.value : 0;
+      };
+
+      // ---- panels ------------------------------------------------------------
+      function renderOverview(ready, samples) {
+        const strip = el("div", "strip");
+        const stat = (k, v, className) => {
+          const box = el("div", "stat");
+          box.append(el("div", `n ${className || ""}`.trim(), v));
+          box.append(el("div", "k", k));
+          return box;
+        };
+        strip.append(stat("status", ready.status, ready.status === "ready" ? "ok" : "bad"));
+        strip.append(stat("uptime", duration(scalar(samples, "tinyrouter_uptime_seconds"))));
+        strip.append(stat("in flight", num(scalar(samples, "tinyrouter_in_flight_requests"))));
+
+        const requests = pick(samples, "tinyrouter_requests_total");
+        const total = requests.reduce((sum, s) => sum + s.value, 0);
+        const failed = requests
+          .filter((s) => !/^2\d\d$/.test(s.labels.status || ""))
+          .reduce((sum, s) => sum + s.value, 0);
+        strip.append(stat("requests", num(total)));
+        strip.append(stat("non-2xx", num(failed), failed > 0 ? "warn" : undefined));
+
+        const breaker = ready.circuit_breaker;
+        if (breaker) {
+          const open = breaker.open || [];
+          strip.append(
+            breaker.enabled
+              ? stat("cooling", open.length ? String(open.length) : "0", open.length ? "bad" : "ok")
+              : stat("breaker", "off", "muted"),
+          );
+        }
+        const overflow = scalar(samples, "tinyrouter_metrics_overflow_total");
+        if (overflow > 0) strip.append(stat("collapsed series", num(overflow), "warn"));
+        replace("overview", strip);
+      }
+
+      function renderProviders(ready, samples) {
+        const circuits = pick(samples, "tinyrouter_circuit_open");
+        const attempts = pick(samples, "tinyrouter_provider_attempts_total");
+        const bodies = pick(samples, "tinyrouter_response_bodies_total");
+
+        const names = new Set();
+        for (const s of circuits) names.add(s.labels.provider);
+        for (const s of attempts) names.add(s.labels.provider);
+        if (names.size === 0) {
+          replace("providers", el("span", "muted", "No provider activity yet."));
+          return;
+        }
+
+        const rows = [...names].sort().map((provider) => {
+          const circuit = circuits.find((s) => s.labels.provider === provider);
+          const cooling = circuit ? circuit.value === 1 : false;
+          const mine = attempts.filter((s) => s.labels.provider === provider);
+          const ok = mine.filter((s) => /^2\d\d$/.test(s.labels.status)).reduce((a, s) => a + s.value, 0);
+          const bad = mine.reduce((a, s) => a + s.value, 0) - ok;
+          const rough = bodies
+            .filter((s) => s.labels.provider === provider && s.labels.outcome !== "completed")
+            .reduce((a, s) => a + s.value, 0);
+
+          const state = el("span", `pill ${cooling ? "bad" : "ok"}`, cooling ? "cooling" : "healthy");
+          const models = new Set(mine.map((s) => s.labels.model));
+          return [
+            { node: el("span", "mono", provider) },
+            { node: state },
+            { text: [...models].sort().join(", ") || "—", className: "mono muted" },
+            { text: num(ok), num: true },
+            { text: num(bad), num: true, className: bad > 0 ? "bad" : undefined },
+            { text: num(rough), num: true, className: rough > 0 ? "warn" : undefined },
+          ];
+        });
+
+        replace(
+          "providers",
+          table(
+            [
+              { label: "provider" },
+              { label: "circuit" },
+              { label: "models" },
+              { label: "2xx", num: true },
+              { label: "errors", num: true },
+              { label: "bad bodies", num: true },
+            ],
+            rows,
+          ),
+        );
+      }
+
+      function renderTokens(samples) {
+        const tokens = pick(samples, "tinyrouter_tokens_total");
+        if (tokens.length === 0) {
+          replace("tokens", el("span", "muted", "No provider has reported usage yet."));
+          return;
+        }
+        const byModel = new Map();
+        for (const s of tokens) {
+          const key = `${s.labels.provider}/${s.labels.model}`;
+          const entry = byModel.get(key) || { prompt: 0, completion: 0 };
+          if (s.labels.kind === "prompt") entry.prompt += s.value;
+          else entry.completion += s.value;
+          byModel.set(key, entry);
+        }
+        const rows = [...byModel.entries()]
+          .sort((a, b) => b[1].prompt + b[1].completion - (a[1].prompt + a[1].completion))
+          .map(([target, t]) => [
+            { node: el("span", "mono", target) },
+            { text: num(t.prompt), num: true },
+            { text: num(t.completion), num: true },
+            { text: num(t.prompt + t.completion), num: true },
+          ]);
+        replace(
+          "tokens",
+          table(
+            [
+              { label: "target" },
+              { label: "prompt", num: true },
+              { label: "completion", num: true },
+              { label: "total", num: true },
+            ],
+            rows,
+          ),
+        );
+      }
+
+      function renderRoutes(models, note) {
+        $("routes-note").textContent = note || "";
+        if (!models) {
+          replace("routes", el("span", "muted", "—"));
+          return;
+        }
+        const routes = models.data.filter((m) => m.tinyrouter && m.tinyrouter.kind === "route");
+        if (routes.length === 0) {
+          replace("routes", el("span", "muted", "No aliases configured."));
+          return;
+        }
+        const rows = routes.map((route) => {
+          const list = el("ul", "targets");
+          for (const target of route.tinyrouter.targets) list.append(el("li", "mono", target));
+          return [{ node: el("span", "mono", route.id) }, { node: list }];
+        });
+        replace("routes", table([{ label: "alias" }, { label: "targets in order" }], rows));
+      }
+
+      // ---- fetching ----------------------------------------------------------
+      let lastReadAt = null;
+
+      function showError(message, hint) {
+        $("error-body").textContent = message;
+        const age =
+          lastReadAt === null
+            ? "Nothing has been read from this gateway yet."
+            : `Everything below was last read ${duration(Math.round((Date.now() - lastReadAt) / 1000))} ago and is no longer being updated.`;
+        $("error-hint").textContent = hint ? `${hint} ${age}` : age;
+        $("error").classList.remove("hidden");
+        document.body.classList.add("stale");
+      }
+
+      function clearError() {
+        lastReadAt = Date.now();
+        $("error").classList.add("hidden");
+        document.body.classList.remove("stale");
+      }
+
+      function base() {
+        return urlBox.value.trim().replace(/\/+$/, "");
+      }
+
+      async function getText(path, headers) {
+        let response;
+        try {
+          response = await fetch(base() + path, { headers: headers || {}, mode: "cors" });
+        } catch (cause) {
+          // A blocked cross-origin read and an unreachable host both land here
+          // as the same TypeError. Mark it so a bug in this page's own code is
+          // never reported to the operator as their gateway being unreachable.
+          const error = new Error(`Could not reach ${base()}${path}`);
+          error.blocked = true;
+          error.cause = cause;
+          throw error;
+        }
+        if (!response.ok) {
+          const error = new Error(`${path} returned ${response.status}`);
+          error.status = response.status;
+          throw error;
+        }
+        return response.text();
+      }
+
+      let inFlight = false;
+      async function refresh() {
+        if (inFlight || base() === "") return;
+        inFlight = true;
+        try {
+          const [readyText, metricsText] = await Promise.all([getText("/readyz"), getText("/metrics")]);
+          const ready = JSON.parse(readyText);
+          const samples = parseMetrics(metricsText);
+          clearError();
+          renderOverview(ready, samples);
+          renderProviders(ready, samples);
+          renderTokens(samples);
+
+          // Routes are behind the gateway's API key; everything above is not.
+          const key = keyBox.value.trim();
+          if (key === "") {
+            renderRoutes(null, "Enter the gateway API key to list route aliases.");
+          } else {
+            try {
+              const models = JSON.parse(
+                await getText("/v1/models", { authorization: `Bearer ${key}` }),
+              );
+              renderRoutes(models, "");
+            } catch (error) {
+              renderRoutes(
+                null,
+                error.status === 401 ? "That API key was refused." : `Could not read routes: ${error.message}`,
+              );
+            }
+          }
+        } catch (error) {
+          showError(
+            error.message,
+            error.blocked
+              ? `Either the gateway is not running, or it has not been told to share with this page — add allow_origin: ["${location.origin}"] under server: in tinyrouter.yaml and restart it.`
+              : "",
+          );
+        } finally {
+          inFlight = false;
+        }
+      }
+
+      let timer;
+      function reschedule() {
+        clearInterval(timer);
+        const every = Number($("every").value);
+        if (every > 0) timer = setInterval(refresh, every);
+      }
+      $("every").addEventListener("change", reschedule);
+      $("now").addEventListener("click", refresh);
+
+      reschedule();
+      refresh();
+    </script>
+  </body>
+</html>

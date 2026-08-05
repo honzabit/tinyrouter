@@ -138,7 +138,10 @@ jobs:
             tar -czf "dist/tinyrouter-$target.tar.gz" -C build tinyrouter
             rm build/tinyrouter
           done
-          cd dist && sha256sum tinyrouter-*.tar.gz > SHA256SUMS
+          # Shipped alongside the executables so the status page in a release
+          # is by construction the one that matches the gateway in it.
+          cp ui/index.html dist/tinyrouter-ui.html
+          cd dist && sha256sum tinyrouter-*.tar.gz tinyrouter-ui.html > SHA256SUMS
       - name: Verify the native archive
         run: |
           tar -xzf dist/tinyrouter-linux-x64.tar.gz -C build
