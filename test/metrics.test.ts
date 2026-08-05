@@ -11,6 +11,21 @@ describe("metrics", () => {
     expect(output).toContain("tinyrouter_in_flight_requests 0");
   });
 
+  test("reports which providers the breaker has demoted", () => {
+    const metrics = new Metrics();
+    // Read at scrape time rather than stored, so a circuit whose cooldown has
+    // elapsed is not still reported as cooling.
+    const output = metrics.render([
+      { id: "anthropic", open: true },
+      { id: "openai", open: false },
+    ]);
+    expect(output).toContain("# TYPE tinyrouter_circuit_open gauge");
+    expect(output).toContain('tinyrouter_circuit_open{provider="anthropic"} 1');
+    // Healthy providers still get a series: a missing one is indistinguishable
+    // from a scrape that failed.
+    expect(output).toContain('tinyrouter_circuit_open{provider="openai"} 0');
+  });
+
   test("collapses new series into an overflow bucket at the cardinality cap", () => {
     const metrics = new Metrics();
     for (let index = 0; index <= 1000; index += 1) {

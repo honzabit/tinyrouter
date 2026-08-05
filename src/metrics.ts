@@ -79,7 +79,9 @@ export class Metrics {
     this.#add(this.#bodies, labels.provider, labels.model, labels.outcome, 1, labels.outcome);
   }
 
-  render(): string {
+  // Circuit state is passed in rather than held, because it is a function of
+  // elapsed time: it has to be read from the breaker at scrape time.
+  render(circuits: Array<{ id: string; open: boolean }> = []): string {
     const lines = [
       "# HELP tinyrouter_uptime_seconds Process uptime in seconds.",
       "# TYPE tinyrouter_uptime_seconds gauge",
@@ -132,6 +134,20 @@ export class Metrics {
       lines.push(
         `tinyrouter_response_bodies_total{provider="${escapeLabel(provider)}",model="${escapeLabel(model)}",outcome="${escapeLabel(outcome)}"} ${value}`,
       );
+    }
+
+    if (circuits.length > 0) {
+      lines.push(
+        "# HELP tinyrouter_circuit_open Providers currently demoted to a last resort by the circuit breaker.",
+        "# TYPE tinyrouter_circuit_open gauge",
+      );
+      for (const circuit of [...circuits].sort((a, b) => a.id.localeCompare(b.id))) {
+        // Healthy providers still get a series: absent is indistinguishable
+        // from a scrape that never happened.
+        lines.push(
+          `tinyrouter_circuit_open{provider="${escapeLabel(circuit.id)}"} ${circuit.open ? 1 : 0}`,
+        );
+      }
     }
 
     return `${lines.join("\n")}\n`;

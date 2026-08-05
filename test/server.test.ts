@@ -476,6 +476,57 @@ routes:
     expect(response.status).toBe(200);
   });
 
+  test("reports circuit breaker state on readyz and in metrics", async () => {
+    const config = parseConfig(`
+routing:
+  circuit_breaker:
+    failures: 1
+    cooldown_ms: 60000
+providers:
+  flaky:
+    type: openai-compatible
+    base_url: https://flaky.test/v1
+  backup:
+    type: openai-compatible
+    base_url: https://backup.test/v1
+routes:
+  fast: [flaky/model-a, backup/model-b]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async (request) =>
+        new URL(request.url).hostname === "flaky.test"
+          ? Response.json({ error: { message: "boom" } }, { status: 503 })
+          : Response.json({ id: "ok", choices: [] }),
+    });
+
+    const before = (await (await gateway.fetch(new Request("http://test/readyz"))).json()) as {
+      circuit_breaker: { enabled: boolean; open: string[] };
+    };
+    expect(before.circuit_breaker).toEqual({ enabled: true, open: [] });
+
+    await gateway.fetch(
+      new Request("http://test/v1/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({ model: "fast", messages: [{ role: "user", content: "hi" }] }),
+      }),
+    );
+
+    // 0.4.0 could demote a provider with no way for an operator to see it had.
+    const after = (await (await gateway.fetch(new Request("http://test/readyz"))).json()) as {
+      status: string;
+      circuit_breaker: { enabled: boolean; open: string[] };
+    };
+    expect(after.circuit_breaker).toEqual({ enabled: true, open: ["flaky"] });
+    // Demoted is not removed - the gateway still serves - so readiness must not
+    // flip and pull the process out of rotation over it.
+    expect(after.status).toBe("ready");
+
+    const metrics = await (await gateway.fetch(new Request("http://test/metrics"))).text();
+    expect(metrics).toContain('tinyrouter_circuit_open{provider="flaky"} 1');
+    expect(metrics).toContain('tinyrouter_circuit_open{provider="backup"} 0');
+  });
+
   test("returns an OpenAI-shaped validation error", async () => {
     const gateway = createTestGateway();
     const response = await gateway.fetch(

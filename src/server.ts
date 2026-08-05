@@ -131,10 +131,21 @@ export function createGateway(
 
     if (url.pathname === "/healthz") return Response.json({ status: "ok" });
     if (url.pathname === "/readyz") {
-      return Response.json({ status: "ready", providers: Object.keys(config.providers).length });
+      const circuits = router.circuitStates();
+      return Response.json({
+        // Demoted is not removed - a cooling provider is still tried, and other
+        // targets still serve - so readiness does not flip and pull the process
+        // out of rotation over it.
+        status: "ready",
+        providers: Object.keys(config.providers).length,
+        circuit_breaker: {
+          enabled: circuits.enabled,
+          open: circuits.providers.filter((p) => p.open).map((p) => p.id),
+        },
+      });
     }
     if (url.pathname === "/metrics") {
-      return new Response(metrics.render(), {
+      return new Response(metrics.render(router.circuitStates().providers), {
         headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
       });
     }

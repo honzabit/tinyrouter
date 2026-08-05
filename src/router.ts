@@ -159,6 +159,16 @@ export class Router {
     return [target];
   }
 
+  // Answered from the breaker at the moment it is asked, never stored: a
+  // circuit closes when its cooldown elapses rather than by an event, so a
+  // value cached earlier would report a provider as cooling after it recovered.
+  circuitStates(): { enabled: boolean; providers: Array<{ id: string; open: boolean }> } {
+    return {
+      enabled: this.breaker.enabled,
+      providers: [...this.adapters.keys()].map((id) => ({ id, open: this.breaker.isOpen(id) })),
+    };
+  }
+
   listModels(): Array<{ id: string; targets: string[]; kind: "route" | "target" }> {
     const aliases = Object.entries(this.config.routes).map(([id, targets]) => ({
       id,
