@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TinyRouter — a small, auditable LLM gateway</title>
+    <meta
+      name="description"
+      content="A self-hosted OpenAI-compatible LLM gateway small enough to read before you hand it your API keys. Deterministic fallback, two dependencies, one YAML file."
+    />
+    <link rel="canonical" href="https://tinyrouter.dev/" />
+    <meta property="og:title" content="TinyRouter" />
+    <meta
+      property="og:description"
+      content="A self-hosted OpenAI-compatible LLM gateway small enough to read before you hand it your API keys."
+    />
+    <meta property="og:url" content="https://tinyrouter.dev/" />
+    <meta property="og:type" content="website" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #fbfbfa;
+        --panel: #ffffff;
+        --line: #e4e2dd;
+        --ink: #1b1a17;
+        --muted: #6b6862;
+        --ok: #2f7d4f;
+        --bad: #b3402f;
+        --accent: #3d5a80;
+        --code-bg: #f2f1ee;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16171a;
+          --panel: #1d1f23;
+          --line: #2e3138;
+          --ink: #e8e6e1;
+          --muted: #999691;
+          --ok: #6fbf8b;
+          --bad: #e2705c;
+          --accent: #8fb0d9;
+          --code-bg: #24272c;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 0 1.25rem 4rem;
+        background: var(--bg);
+        color: var(--ink);
+        font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      main { max-width: 46rem; margin: 0 auto; }
+      a { color: var(--accent); }
+      code, pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.875em;
+      }
+      :not(pre) > code {
+        background: var(--code-bg);
+        padding: 0.1em 0.35em;
+        border-radius: 4px;
+      }
+      pre {
+        background: var(--code-bg);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0.85rem 1rem;
+        overflow-x: auto;
+        line-height: 1.5;
+      }
+      pre code { background: none; padding: 0; }
+
+      header { padding: 4rem 0 2.5rem; }
+      h1 {
+        font-size: clamp(2rem, 7vw, 2.75rem);
+        line-height: 1.1;
+        letter-spacing: -0.02em;
+        margin: 0 0 0.75rem;
+      }
+      .lede { font-size: 1.15rem; color: var(--muted); margin: 0 0 1.5rem; max-width: 34rem; }
+      .lede strong { color: var(--ink); font-weight: 600; }
+      .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+      .button {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        border-radius: 7px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        color: var(--ink);
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 0.95rem;
+      }
+      .button:hover { border-color: var(--accent); color: var(--accent); }
+      .button.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+      .button.primary:hover { opacity: 0.85; color: var(--bg); }
+
+      h2 {
+        font-size: 1.3rem;
+        letter-spacing: -0.01em;
+        margin: 3rem 0 0.75rem;
+        padding-top: 1.75rem;
+        border-top: 1px solid var(--line);
+      }
+      h3 { font-size: 1rem; margin: 1.75rem 0 0.5rem; }
+      p { margin: 0 0 1rem; }
+      ul { margin: 0 0 1rem; padding-left: 1.2rem; }
+      li { margin-bottom: 0.35rem; }
+      .muted { color: var(--muted); }
+
+      table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
+      th, td {
+        text-align: left;
+        padding: 0.5rem 0.75rem 0.5rem 0;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+      th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+
+      /* A representation of the status page, drawn rather than screenshotted:
+         no binary asset to go stale, and it follows the reader's theme. */
+      .shot {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 0.9rem 1rem;
+        margin-bottom: 0.75rem;
+        overflow-x: auto;
+      }
+      .shot table { margin: 0; }
+      .shot .h {
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--muted);
+        font-weight: 600;
+      }
+      .shot td { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
+      .shot td.n { text-align: right; font-variant-numeric: tabular-nums; }
+      .pill {
+        display: inline-block;
+        padding: 0.05rem 0.45rem;
+        border-radius: 99px;
+        font-size: 0.68rem;
+        font-weight: 700;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        border: 1px solid currentColor;
+      }
+      .cooling { color: var(--bad); }
+      .healthy { color: var(--ok); }
+
+      footer {
+        margin-top: 3.5rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      footer a { color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>TinyRouter</h1>
+        <p class="lede">
+          A self-hosted, OpenAI-compatible LLM gateway <strong>small enough to read before you hand it
+          your API keys</strong>. Deterministic fallback, two runtime dependencies, one YAML file.
+        </p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/honzabit/tinyrouter">GitHub</a>
+          <a class="button" href="https://github.com/honzabit/tinyrouter/blob/main/docs/configuration.md">Docs</a>
+          <a class="button" href="https://github.com/honzabit/tinyrouter/releases/latest">Download</a>
+        </div>
+      </header>
+
+      <p>
+        A gateway sits between your provider credentials and every prompt you send. TinyRouter is roughly
+        2,200 lines of TypeScript with two runtime dependencies, <code>yaml</code> and <code>zod</code> —
+        one person can read all of it in an evening. It has no accounts, billing, database, Redis, or
+        background control plane, and the gateway serves no dashboard.
+      </p>
+
+      <h2>Install</h2>
+      <p>Standalone executables for Linux and macOS, x64 and arm64. They embed the Bun runtime, so nothing else is needed:</p>
+      <pre><code>curl -fsSL https://github.com/honzabit/tinyrouter/releases/latest/download/tinyrouter-linux-x64.tar.gz | tar -xz</code></pre>
+      <p>Or run the container:</p>
+      <pre><code>docker run --rm -p 8080:8080 --env-file .env \
+  -v "$PWD/tinyrouter.yaml:/etc/tinyrouter/tinyrouter.yaml:ro" \
+  ghcr.io/honzabit/tinyrouter:latest</code></pre>
+
+      <h2>Describe your fallbacks in YAML</h2>
+      <p>
+        Serve your own model first and fail over to a hosted one only when it is down or overloaded. Targets
+        are tried in the order you write them — nothing is inferred:
+      </p>
+      <pre><code>providers:
+  local:
+    type: openai-compatible
+    base_url: http://localhost:11434/v1
+  anthropic:
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+
+routes:
+  assistant:
+    - local/qwen3
+    - anthropic/claude-haiku-4-5</code></pre>
+      <p>Then call the alias exactly as you would call a model:</p>
+      <pre><code>curl http://localhost:8080/v1/chat/completions \
+  -H 'Authorization: Bearer local-secret' \
+  -d '{"model":"assistant","messages":[{"role":"user","content":"Hello"}]}'</code></pre>
+
+      <h2>See what it is doing</h2>
+      <p>
+        A single static HTML file ships in <code>ui/</code> and reads the gateway's own endpoints. It shows
+        which providers are healthy, which the circuit breaker has demoted, and where your tokens went:
+      </p>
+      <div class="shot">
+        <table>
+          <thead>
+            <tr>
+              <th class="h">provider</th>
+              <th class="h">circuit</th>
+              <th class="h">models</th>
+              <th class="h" style="text-align: right">2xx</th>
+              <th class="h" style="text-align: right">errors</th>
+              <th class="h" style="text-align: right">bad bodies</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>anthropic</td>
+              <td><span class="pill cooling">cooling</span></td>
+              <td>claude-haiku-4-5</td>
+              <td class="n">0</td>
+              <td class="n">3</td>
+              <td class="n">0</td>
+            </tr>
+            <tr>
+              <td>local</td>
+              <td><span class="pill healthy">healthy</span></td>
+              <td>qwen3</td>
+              <td class="n">184</td>
+              <td class="n">0</td>
+              <td class="n">0</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="font-size: 0.9rem">
+        <strong>Bad bodies</strong> is the column no status code can give you: a provider that answers
+        <code>200</code> and then hangs part-way through the stream. The status line went out long before
+        anyone knew.
+      </p>
+      <p>
+        Download it and open it locally rather than using a copy hosted here. It is a page that reads your
+        gateway, and a page served from someone else's domain is a page whose JavaScript you have to trust
+        with it. That is the whole argument for this project, so it would be odd to make an exception.
+      </p>
+
+      <h2>When to use it</h2>
+      <ul>
+        <li><strong>You want to audit the thing that holds your keys.</strong> Two dependencies, no build magic, one file of configuration.</li>
+        <li><strong>You refuse to run infrastructure for a proxy.</strong> One process. No database, no Redis, no admin UI.</li>
+        <li><strong>You run local models with cloud fallback.</strong> Serve your own hardware first, fail over only when it cannot answer.</li>
+        <li><strong>You need failover you can reason about.</strong> The routing contract fits in a paragraph and never switches providers mid-stream.</li>
+        <li><strong>Clients you don't control need one endpoint.</strong> Anything that accepts an OpenAI base URL gets aliases and failover with no code changes.</li>
+      </ul>
+
+      <h3>Use something else when</h3>
+      <table>
+        <thead>
+          <tr><th>You need</th><th>Better fit</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Budgets, virtual keys, per-user spend tracking, an admin UI</td><td><a href="https://github.com/BerriAI/litellm">LiteLLM</a></td></tr>
+          <tr><td>Guardrails, semantic caching, prompt management</td><td><a href="https://github.com/Portkey-AI/gateway">Portkey</a></td></tr>
+          <tr><td>A hosted gateway with nothing to operate</td><td><a href="https://openrouter.ai">OpenRouter</a>, <a href="https://developers.cloudflare.com/ai-gateway/">Cloudflare AI Gateway</a></td></tr>
+          <tr><td>A hundred providers out of the box</td><td>LiteLLM or a hosted gateway</td></tr>
+          <tr><td>Provider switching inside one app whose code you control</td><td>An SDK such as the <a href="https://ai-sdk.dev">AI SDK</a> — you may not need a proxy at all</td></tr>
+        </tbody>
+      </table>
+      <p>Those are good projects. TinyRouter exists for the case where the feature you want most is being able to understand the whole thing.</p>
+
+      <h2>Documentation</h2>
+      <p>
+        Reference lives in the repository, so it ships in the clone and the tarball and always matches the
+        version you actually have:
+      </p>
+      <ul>
+        <li><a href="https://github.com/honzabit/tinyrouter/blob/main/docs/configuration.md">Configuration</a> — every key, circuit breaking, request filters, finding model IDs</li>
+        <li><a href="https://github.com/honzabit/tinyrouter/blob/main/docs/routing.md">Routing contract</a> — what happens per request, and what each adapter translates</li>
+        <li><a href="https://github.com/honzabit/tinyrouter/blob/main/docs/operations.md">Operations</a> — endpoints, metrics, the status page, shutdown, TLS</li>
+        <li><a href="https://github.com/honzabit/tinyrouter/blob/main/docs/development.md">Development</a> — build, test, smoke against live providers, releasing</li>
+      </ul>
+
+      <footer>
+        <p>
+          Apache-2.0 · <a href="https://github.com/honzabit/tinyrouter">github.com/honzabit/tinyrouter</a> ·
+          <a href="https://github.com/honzabit/tinyrouter/blob/main/SECURITY.md">Security</a>
+        </p>
+        <p>
+          Alpha. The routing contract is unit-tested and smoke-checked against live providers on every
+          release, but TinyRouter has not yet been exercised under production traffic.
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>
