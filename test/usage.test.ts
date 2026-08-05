@@ -130,6 +130,28 @@ describe("usage observation", () => {
     expect(usage).toEqual([{ prompt: 9, completion: 4 }]);
   });
 
+  test("records usage when the provider's stream breaks mid-response", async () => {
+    const usage: TokenUsage[] = [];
+    const upstream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":8}}\n\n',
+          ),
+        );
+        setTimeout(() => controller.error(new Error("connection reset by peer")), 5);
+      },
+    });
+    const observed = observeUsage(
+      new Response(upstream, { headers: { "content-type": "text/event-stream" } }),
+      (u) => usage.push(u),
+    );
+    // The break still reaches the client - a truncated answer must not look
+    // like a complete one - but the tokens behind it were generated and billed.
+    await expect(observed.text()).rejects.toThrow();
+    expect(usage).toEqual([{ prompt: 7, completion: 8 }]);
+  });
+
   test("finds usage after a single line larger than the retained tail", async () => {
     const huge = `data: {"choices":[{"delta":{"content":"${"y".repeat(200_000)}"}}]}\n\n`;
     const frames = `${huge}data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3}}\n\n`;

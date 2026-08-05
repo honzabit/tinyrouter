@@ -93,7 +93,18 @@ export function observeUsage(response: Response, record: (usage: TokenUsage) => 
 
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
-      const { done, value } = await reader.read();
+      let result: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        result = await reader.read();
+      } catch (error) {
+        // The provider cut its own stream short. The client has to see that,
+        // but everything it sent before the break was still generated - and
+        // charged for - so it still counts.
+        report();
+        controller.error(error);
+        return;
+      }
+      const { done, value } = result;
       if (done) {
         tail += decoder.decode();
         report();
