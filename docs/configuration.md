@@ -52,6 +52,19 @@ routes:
 
 `server.allow_origin` lists browser origins allowed to read the observability endpoints — `/`, `/healthz`, `/readyz`, `/metrics`, and `/v1/models` — so a page such as a status dashboard can be served from somewhere else. Omit it and no response carries CORS headers at all. Origins are normalised to the form a browser actually sends, so `https://UI.Example/` is stored and matched as `https://ui.example`; `*`, and anything carrying a path or query, are rejected when the configuration loads rather than silently matching more than you wrote. With no origins configured, `OPTIONS` behaves exactly as it did before the option existed. `/v1/chat/completions` is never shared, whatever is listed. That is deliberate — `api_key` is optional, so a gateway may be running open on localhost, and a page that could reach completions cross-origin could spend your provider credit. Refusals on shared endpoints carry the headers too, so a bad key reports as `401` rather than as a CORS failure.
 
+`server.api_key` sets one shared secret. `server.api_keys` instead names several, so a caller can be revoked by deleting a line rather than by rotating a secret everybody shares:
+
+```yaml
+server:
+  api_keys:
+    alice: ${ALICE_KEY}
+    ci: ${CI_KEY}
+```
+
+Set one or the other, never both — loading rejects the pair rather than guessing which wins. Every key is compared on each request with no early exit, so how long a reply takes says nothing about which key came closest. The name of the matching key appears in the request log as `client`, which is where attribution belongs: `/metrics` is open by default, and a label there would publish who your callers are and how much each uses to anyone who can reach the port.
+
+This is authentication, not accounts. There are no per-caller budgets, quotas, or routes, and revoking one means editing the file and restarting. If you need spend limits or keys you can issue and revoke at runtime, that is [LiteLLM](https://github.com/BerriAI/litellm).
+
 Environment placeholders use `${NAME}`. `${NAME:-fallback}` is also supported. Configuration loading fails if a required variable is absent.
 
 The native `openai`, `anthropic`, and `gemini` provider types require `api_key`. The `openai-compatible` type does not, so it can route to local servers. Every provider accepts optional static `headers`, `base_url`, and `timeout_ms` values.

@@ -69,6 +69,10 @@ const rawConfigSchema = z.strictObject({
       host: z.string().default("127.0.0.1"),
       port: z.number().int().min(1).max(65_535).default(8080),
       api_key: z.string().min(1).optional(),
+      // Named callers, so one can be revoked by deleting a line rather than by
+      // rotating a secret everybody shares. Not accounts: there is no state
+      // here, no budget, and no per-caller routing - just who may call.
+      api_keys: z.record(z.string().regex(identifier), z.string().min(1)).optional(),
       max_body_bytes: z
         .number()
         .int()
@@ -98,11 +102,23 @@ const rawConfigSchema = z.strictObject({
         .min(1)
         .optional(),
     })
-    // authorized() waves everything through when api_key is unset, so the flag
+    // Two ways to say who may call is one too many: which wins would be a
+    // guess, and guessing wrong about an auth setting is the expensive kind.
+    .refine(
+      (server) => server.api_key === undefined || server.api_keys === undefined,
+      "set either server.api_key or server.api_keys, not both",
+    )
+    // An empty set reads as "these callers may in" while naming nobody.
+    .refine(
+      (server) => server.api_keys === undefined || Object.keys(server.api_keys).length > 0,
+      "server.api_keys must name at least one caller",
+    )
+    // authorized() waves everything through when no key is set, so the flag
     // on its own would read as protection while providing none.
     .refine(
-      (server) => !server.protect_observability || server.api_key !== undefined,
-      "protect_observability needs server.api_key to be set",
+      (server) =>
+        !server.protect_observability || server.api_key !== undefined || server.api_keys !== undefined,
+      "protect_observability needs server.api_key or server.api_keys to be set",
     )
     // Bun closes an idle connection on its own. If it gets there first the body
     // timeout can never fire, leaving a setting that reads as protection while
@@ -266,7 +282,18 @@ export async function loadConfig(path: string): Promise<TinyRouterConfig> {
 export function redactConfig(config: TinyRouterConfig): unknown {
   return {
     ...config,
-    server: { ...config.server, ...(config.server.api_key === undefined ? {} : { api_key: "[redacted]" }) },
+    server: {
+      ...config.server,
+      ...(config.server.api_key === undefined ? {} : { api_key: "[redacted]" }),
+      ...(config.server.api_keys === undefined
+        ? {}
+        : {
+            // Names are useful in a dump; the secrets behind them are not.
+            api_keys: Object.fromEntries(
+              Object.keys(config.server.api_keys).map((name) => [name, "[redacted]"]),
+            ),
+          }),
+    },
     providers: Object.fromEntries(
       Object.entries(config.providers).map(([id, provider]) => [
         id,

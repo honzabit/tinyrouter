@@ -794,6 +794,104 @@ routes:
     }
   });
 
+  test("admits every named key and names the caller in the log", async () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const config = parseConfig(`
+server:
+  api_keys:
+    alice: alice-secret
+    bob: bob-secret
+    ci: ci-secret
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: { log: (record) => logs.push(record as unknown as Record<string, unknown>) },
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    const call = (key: string) =>
+      gateway.fetch(
+        new Request("http://test/v1/chat/completions", {
+          method: "POST",
+          headers: { authorization: `Bearer ${key}` },
+          body: JSON.stringify({ model: "fast", messages: [{ role: "user", content: "hi" }] }),
+        }),
+      );
+
+    // Including the last entry: matching must consider every key, not stop at
+    // the first, or which ones work would depend on map order.
+    for (const key of ["alice-secret", "bob-secret", "ci-secret"]) {
+      expect((await call(key)).status).toBe(200);
+    }
+    expect(logs.map((record) => record.client)).toEqual(["alice", "bob", "ci"]);
+
+    expect((await call("not-a-key")).status).toBe(401);
+    // A near miss of a real key is no closer to working than nonsense.
+    expect((await call("alice-secre")).status).toBe(401);
+    expect((await call("alice-secretX")).status).toBe(401);
+  });
+
+  test("logs no caller when there is only one key to be", async () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const config = parseConfig(`
+server:
+  api_key: gateway-secret
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: { log: (record) => logs.push(record as unknown as Record<string, unknown>) },
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    const response = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", {
+        method: "POST",
+        headers: { authorization: "Bearer gateway-secret" },
+        body: JSON.stringify({ model: "fast", messages: [{ role: "user", content: "hi" }] }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    // Nothing to distinguish, so nothing to say - a constant field on every
+    // line is noise, not attribution.
+    expect(logs.at(-1)?.client).toBeUndefined();
+  });
+
+  test("protects the observability endpoints with any of the named keys", async () => {
+    const config = parseConfig(`
+server:
+  protect_observability: true
+  api_keys:
+    alice: alice-secret
+    ci: ci-secret
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    expect((await gateway.fetch(new Request("http://test/metrics"))).status).toBe(401);
+    const scraped = await gateway.fetch(
+      new Request("http://test/metrics", { headers: { authorization: "Bearer ci-secret" } }),
+    );
+    expect(scraped.status).toBe(200);
+  });
+
   test("returns an OpenAI-shaped validation error", async () => {
     const gateway = createTestGateway();
     const response = await gateway.fetch(

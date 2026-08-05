@@ -68,13 +68,14 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     return;
   }
 
-  if (config.server.api_key === undefined && !LOOPBACK_HOSTS.has(config.server.host)) {
+  const unauthenticated = config.server.api_key === undefined && config.server.api_keys === undefined;
+  if (unauthenticated && !LOOPBACK_HOSTS.has(config.server.host)) {
     jsonLogger.log({
       level: "warn",
       event: "server_unauthenticated",
       host: config.server.host,
       message:
-        "server.api_key is not set and the host is not loopback; /v1 endpoints are open to anyone who can reach this address.",
+        "Neither server.api_key nor server.api_keys is set and the host is not loopback; /v1 endpoints are open to anyone who can reach this address.",
     });
   }
 

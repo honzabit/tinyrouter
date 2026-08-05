@@ -9,13 +9,41 @@ import { type Fetch, Router } from "./router.ts";
 import { chatRequestSchema } from "./types.ts";
 import { VERSION } from "./version.ts";
 
-function authorized(request: Request, expected: string | undefined): boolean {
-  if (expected === undefined) return true;
+interface Caller {
+  // The name of the key that matched, when there is more than one to tell
+  // apart. A single api_key names nobody, so a log line gains nothing from a
+  // constant field repeated on every request.
+  client?: string;
+}
+
+function matches(presented: Buffer, secret: string): boolean {
+  const wanted = Buffer.from(secret);
+  // timingSafeEqual throws on a length mismatch, so length is compared first
+  // and is therefore observable. That is inherent here and not worth pretending
+  // otherwise: it leaks how long a key is, never which one or how close.
+  return presented.length === wanted.length && timingSafeEqual(presented, wanted);
+}
+
+// Returns the caller when the request may proceed, or undefined when it may
+// not. An open gateway - no key configured at all - returns an empty caller.
+function authorize(request: Request, server: TinyRouterConfig["server"]): Caller | undefined {
+  if (server.api_key === undefined && server.api_keys === undefined) return {};
   const header = request.headers.get("authorization");
-  if (header === null || !header.startsWith("Bearer ")) return false;
-  const actual = Buffer.from(header.slice(7));
-  const wanted = Buffer.from(expected);
-  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
+  if (header === null || !header.startsWith("Bearer ")) return undefined;
+  const presented = Buffer.from(header.slice(7));
+
+  if (server.api_keys === undefined) {
+    return server.api_key !== undefined && matches(presented, server.api_key) ? {} : undefined;
+  }
+
+  // Every key is compared, with no early exit on a hit: returning as soon as
+  // one matches would make the reply arrive sooner for a key listed first,
+  // which over enough requests says something about the set.
+  let found: string | undefined;
+  for (const [name, secret] of Object.entries(server.api_keys)) {
+    if (matches(presented, secret) && found === undefined) found = name;
+  }
+  return found === undefined ? undefined : { client: found };
 }
 
 function requestId(request: Request): string {
@@ -195,7 +223,7 @@ export function createGateway(
       // process is alive, and a probe cannot carry a credential. / is gated
       // because it names the running version.
       (url.pathname === "/metrics" || url.pathname === "/readyz" || url.pathname === "/") &&
-      !authorized(request, config.server.api_key)
+      authorize(request, config.server) === undefined
     ) {
       return withCors(
         errorResponse(
@@ -241,7 +269,8 @@ export function createGateway(
       return withCors(Response.json({ name: "TinyRouter", version: VERSION, status: "ok" }), cors);
     }
 
-    if (url.pathname.startsWith("/v1/") && !authorized(request, config.server.api_key)) {
+    const caller = url.pathname.startsWith("/v1/") ? authorize(request, config.server) : undefined;
+    if (url.pathname.startsWith("/v1/") && caller === undefined) {
       return withCors(
         errorResponse(
           new GatewayError({
@@ -335,6 +364,7 @@ export function createGateway(
         stream: input.stream === true,
         duration_ms: Math.round(performance.now() - startedAt),
         attempts: result.attempts,
+        ...(caller?.client === undefined ? {} : { client: caller.client }),
         ...(result.redactions > 0 ? { redactions: result.redactions } : {}),
       });
       return result.response;
@@ -350,6 +380,7 @@ export function createGateway(
           error_type: error.type,
           duration_ms: Math.round(performance.now() - startedAt),
           attempts: error.attempts,
+          ...(caller?.client === undefined ? {} : { client: caller.client }),
         });
         return errorResponse(error, id);
       }

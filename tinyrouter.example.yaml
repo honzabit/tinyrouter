@@ -6,6 +6,11 @@ server:
   host: ${TINYROUTER_HOST:-127.0.0.1}
   port: 8080
   api_key: ${TINYROUTER_API_KEY}
+  # Or name several callers instead, so one can be revoked by deleting a line.
+  # Set api_key or api_keys, never both.
+  # api_keys:
+  #   alice: ${ALICE_KEY}
+  #   ci: ${CI_KEY}
   # /healthz, /readyz and /metrics are open by default, and disclose which
   # providers you use, how many tokens you spend, and which are failing right
   # now. Set this to put /readyz and /metrics behind api_key; /healthz stays

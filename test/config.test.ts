@@ -367,4 +367,30 @@ providers:
         .protect_observability,
     ).toBe(true);
   });
+
+  test("accepts a set of named API keys, or one unnamed, never both", () => {
+    const providers = `
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+`;
+    const named = parseConfig(
+      `server:\n  api_keys:\n    alice: \${ALICE_KEY}\n    ci: ci-secret${providers}`,
+      { ALICE_KEY: "alice-secret" },
+    );
+    expect(named.server.api_keys).toEqual({ alice: "alice-secret", ci: "ci-secret" });
+
+    // Two ways to say who may call is one way too many: which wins would be a
+    // guess, and guessing wrong on an auth setting is the expensive kind.
+    expect(() => parseConfig(`server:\n  api_key: single\n  api_keys:\n    alice: a${providers}`)).toThrow(
+      ConfigError,
+    );
+
+    // An empty set reads as "these people may call" while naming nobody.
+    expect(() => parseConfig(`server:\n  api_keys: {}${providers}`)).toThrow(ConfigError);
+
+    // The single key keeps working exactly as before.
+    expect(parseConfig(`server:\n  api_key: single${providers}`).server.api_key).toBe("single");
+  });
 });
