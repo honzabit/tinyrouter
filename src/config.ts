@@ -62,6 +62,14 @@ const rawConfigSchema = z.strictObject({
       retry_statuses: z.array(z.number().int().min(400).max(599)).default([429, 500, 502, 503, 504, 529]),
       backoff_initial_ms: z.number().int().min(0).max(10_000).default(200),
       backoff_max_ms: z.number().int().min(0).max(30_000).default(2_000),
+      // Opt in: `failures: 0` keeps routing purely a function of the current
+      // request, with no dependence on what earlier requests did.
+      circuit_breaker: z
+        .strictObject({
+          failures: z.number().int().min(0).max(100).default(0),
+          cooldown_ms: z.number().int().min(0).max(3_600_000).default(30_000),
+        })
+        .prefault({}),
     })
     .prefault({}),
   providers: z

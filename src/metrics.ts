@@ -4,6 +4,12 @@ interface CounterLabels {
   status: string;
 }
 
+interface TokenLabels {
+  provider: string;
+  model: string;
+  kind: "prompt" | "completion";
+}
+
 const MAX_SERIES_PER_COUNTER = 1_000;
 
 function labelKey(labels: CounterLabels): string {
@@ -18,16 +24,21 @@ export class Metrics {
   readonly startedAt = Date.now();
   #requests = new Map<string, number>();
   #attempts = new Map<string, number>();
+  #tokens = new Map<string, number>();
   #inFlight = 0;
   #overflow = 0;
 
-  #increment(counter: Map<string, number>, labels: CounterLabels): void {
+  #add(counter: Map<string, number>, labels: CounterLabels, amount: number): void {
     let key = labelKey(labels);
     if (!counter.has(key) && counter.size >= MAX_SERIES_PER_COUNTER) {
       key = labelKey({ provider: "__other__", model: "__other__", status: "overflow" });
       this.#overflow += 1;
     }
-    counter.set(key, (counter.get(key) ?? 0) + 1);
+    counter.set(key, (counter.get(key) ?? 0) + amount);
+  }
+
+  #increment(counter: Map<string, number>, labels: CounterLabels): void {
+    this.#add(counter, labels, 1);
   }
 
   requestStarted(): void {
@@ -41,6 +52,11 @@ export class Metrics {
 
   attempt(labels: CounterLabels): void {
     this.#increment(this.#attempts, labels);
+  }
+
+  tokens(labels: TokenLabels, count: number): void {
+    if (count <= 0) return;
+    this.#add(this.#tokens, { provider: labels.provider, model: labels.model, status: labels.kind }, count);
   }
 
   render(): string {
@@ -73,6 +89,17 @@ export class Metrics {
       const [provider = "", model = "", status = ""] = key.split("\u0000");
       lines.push(
         `tinyrouter_provider_attempts_total{provider="${escapeLabel(provider)}",model="${escapeLabel(model)}",status="${escapeLabel(status)}"} ${value}`,
+      );
+    }
+
+    lines.push(
+      "# HELP tinyrouter_tokens_total Tokens reported by providers, by kind.",
+      "# TYPE tinyrouter_tokens_total counter",
+    );
+    for (const [key, value] of [...this.#tokens].sort(([a], [b]) => a.localeCompare(b))) {
+      const [provider = "", model = "", kind = ""] = key.split("\u0000");
+      lines.push(
+        `tinyrouter_tokens_total{provider="${escapeLabel(provider)}",model="${escapeLabel(model)}",kind="${escapeLabel(kind)}"} ${value}`,
       );
     }
 

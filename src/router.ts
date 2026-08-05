@@ -1,3 +1,4 @@
+import { CircuitBreaker } from "./breaker.ts";
 import type { TinyRouterConfig } from "./config.ts";
 import { GatewayError } from "./errors.ts";
 import { createFilterChain, filtersForProvider } from "./filters.ts";
@@ -5,6 +6,7 @@ import type { Metrics } from "./metrics.ts";
 import type { ProviderAdapter } from "./providers/provider.ts";
 import { withStallTimeout } from "./sse.ts";
 import type { AttemptRecord, ChatCompletionRequest, ResolvedTarget, RoutedResponse } from "./types.ts";
+import { observeUsage } from "./usage.ts";
 
 export type Fetch = (request: Request) => Promise<Response>;
 export type Wait = (ms: number, signal: AbortSignal) => Promise<void>;
@@ -104,6 +106,7 @@ export class Router {
   // Filters are scoped per provider, so each provider gets its own chain,
   // compiled once at construction.
   private readonly filterChains: Map<string, ReturnType<typeof createFilterChain>>;
+  private readonly breaker: CircuitBreaker;
 
   constructor(
     private readonly config: TinyRouterConfig,
@@ -111,10 +114,12 @@ export class Router {
     private readonly metrics: Metrics,
     private readonly fetchFn: Fetch = fetch,
     private readonly waitFn: Wait = abortableSleep,
+    breaker: CircuitBreaker = new CircuitBreaker(config.routing.circuit_breaker),
   ) {
     this.filterChains = new Map(
       [...adapters.keys()].map((id) => [id, createFilterChain(filtersForProvider(config.filters, id))]),
     );
+    this.breaker = breaker;
   }
 
   resolve(modelOrAlias: string): ResolvedTarget[] {
@@ -160,10 +165,23 @@ export class Router {
     const filteredByProvider = new Map<string, { input: ChatCompletionRequest; redactions: number }>();
     let lastError: GatewayError | undefined;
     let blockError: GatewayError | undefined;
+    // Skipping every target would fail a request that could still succeed, so
+    // open circuits are only honoured while some other target remains usable.
+    const anyClosed = targets.some((candidate) => !this.breaker.isOpen(candidate.providerId));
 
     for (const [targetIndex, target] of targets.entries()) {
       const adapter = this.adapters.get(target.providerId);
       if (adapter === undefined) continue;
+
+      if (anyClosed && this.breaker.isOpen(target.providerId)) {
+        attempts.push({
+          target: target.label,
+          attempt: 1,
+          durationMs: 0,
+          outcome: "circuit_open",
+        });
+        continue;
+      }
 
       // Filter before contacting the provider, and outside the attempt loop:
       // a block means this target may not receive this content, so the target
@@ -228,8 +246,18 @@ export class Router {
             );
             clearTimeout(timer);
             // The header timeout is done, but the body is still arriving:
-            // hold the provider to the same budget for every gap in it.
-            const served = watchStall(normalized, adapter.timeoutMs, controller);
+            // hold the provider to the same budget for every gap in it, and
+            // count the tokens it reports on the way past.
+            const served = observeUsage(watchStall(normalized, adapter.timeoutMs, controller), (usage) => {
+              this.metrics.tokens(
+                { provider: target.providerId, model: target.model, kind: "prompt" },
+                usage.prompt,
+              );
+              this.metrics.tokens(
+                { provider: target.providerId, model: target.model, kind: "completion" },
+                usage.completion,
+              );
+            });
             attempts.push({
               target: target.label,
               attempt: attemptNumber,
@@ -243,6 +271,7 @@ export class Router {
               model: target.model,
               status: String(upstreamResponse.status),
             });
+            this.breaker.recordSuccess(target.providerId);
             return { response: served, target, attempts, redactions: filtered.redactions };
           }
 
@@ -278,6 +307,9 @@ export class Router {
             model: target.model,
             status: String(upstreamResponse.status),
           });
+          // Only retryable failures say anything about provider health; a
+          // rejected request is the client's problem, not the provider's.
+          if (canMove) this.breaker.recordFailure(target.providerId);
           if (!canMove) throw failureWithAttempts(error, attempts);
           if (hasRetry) {
             if (backoffMs > 0) {
@@ -335,6 +367,7 @@ export class Router {
                 ? String(error.status)
                 : "network_error",
           });
+          if (canMove) this.breaker.recordFailure(target.providerId);
           if (!canMove) throw failureWithAttempts(error, attempts);
           if (hasRetry) {
             if (backoffMs > 0) {

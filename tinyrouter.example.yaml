@@ -12,6 +12,11 @@ routing:
   # backoff_max_ms. Fallback to the next target is always immediate.
   backoff_initial_ms: 200
   backoff_max_ms: 2000
+  # Skip a provider that keeps failing instead of paying its timeout on every
+  # request. Off by default; set failures to a positive number to enable.
+  circuit_breaker:
+    failures: 0
+    cooldown_ms: 30000
 
 # Optional deterministic request filters, applied in order per attempted
 # provider. A filter with a providers list applies only to those providers,

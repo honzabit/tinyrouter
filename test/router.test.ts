@@ -375,6 +375,232 @@ filters:
   });
 });
 
+describe("circuit breaking", () => {
+  const breakerConfig = () =>
+    parseConfig(`
+routing:
+  circuit_breaker:
+    failures: 2
+    cooldown_ms: 60000
+providers:
+  down:
+    type: openai-compatible
+    base_url: https://down.test/v1
+  backup:
+    type: openai-compatible
+    base_url: https://backup.test/v1
+routes:
+  smart: [down/model-a, backup/model-b]
+`);
+
+  test("skips a target whose circuit is open and records why", async () => {
+    const config = breakerConfig();
+    const calls: string[] = [];
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        const host = new URL(request.url).hostname;
+        calls.push(host);
+        if (host === "down.test") return Response.json({ error: { message: "boom" } }, { status: 503 });
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
+
+    // Two requests trip the breaker after two consecutive 503s.
+    await router.route(input, new AbortController().signal);
+    await router.route(input, new AbortController().signal);
+    calls.length = 0;
+
+    const result = await router.route(input, new AbortController().signal);
+    expect(calls).toEqual(["backup.test"]);
+    expect(result.target.providerId).toBe("backup");
+    expect(result.attempts[0]).toMatchObject({ target: "down/model-a", outcome: "circuit_open" });
+  });
+
+  test("a success closes the circuit again", async () => {
+    const config = breakerConfig();
+    let healthy = false;
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        if (new URL(request.url).hostname === "down.test" && !healthy) {
+          return Response.json({ error: { message: "boom" } }, { status: 503 });
+        }
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
+
+    await router.route(input, new AbortController().signal);
+    const failed = await router.route(input, new AbortController().signal);
+    expect(failed.target.providerId).toBe("backup");
+
+    // Cooldown has not elapsed, so the breaker still skips the target.
+    healthy = true;
+    const stillOpen = await router.route(input, new AbortController().signal);
+    expect(stillOpen.target.providerId).toBe("backup");
+  });
+
+  test("attempts an open target anyway when every target is open", async () => {
+    const config = parseConfig(`
+routing:
+  circuit_breaker:
+    failures: 1
+    cooldown_ms: 60000
+providers:
+  only:
+    type: openai-compatible
+    base_url: https://only.test/v1
+routes:
+  smart: [only/model-a]
+`);
+    let calls = 0;
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async () => {
+        calls += 1;
+        if (calls === 1) return Response.json({ error: { message: "boom" } }, { status: 503 });
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
+
+    await expect(router.route(input, new AbortController().signal)).rejects.toBeInstanceOf(GatewayError);
+    // The only target is open now, but skipping it would fail a request that
+    // can still succeed, so it is tried regardless.
+    const result = await router.route(input, new AbortController().signal);
+    expect(result.target.providerId).toBe("only");
+    expect(calls).toBe(2);
+  });
+
+  test("non-retryable failures do not trip the breaker", async () => {
+    const config = breakerConfig();
+    const calls: string[] = [];
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        calls.push(new URL(request.url).hostname);
+        return Response.json({ error: { message: "bad request" } }, { status: 400 });
+      },
+      async () => {},
+    );
+
+    for (let index = 0; index < 3; index += 1) {
+      await expect(router.route(input, new AbortController().signal)).rejects.toBeInstanceOf(GatewayError);
+    }
+    // A client error says nothing about provider health, so every request
+    // still reached the first target.
+    expect(calls).toEqual(["down.test", "down.test", "down.test"]);
+  });
+
+  test("is disabled by default", async () => {
+    const config = parseConfig(`
+providers:
+  down:
+    type: openai-compatible
+    base_url: https://down.test/v1
+  backup:
+    type: openai-compatible
+    base_url: https://backup.test/v1
+routes:
+  smart: [down/model-a, backup/model-b]
+`);
+    expect(config.routing.circuit_breaker.failures).toBe(0);
+    const calls: string[] = [];
+    const router = new Router(
+      config,
+      createAdapters(config),
+      new Metrics(),
+      async (request) => {
+        const host = new URL(request.url).hostname;
+        calls.push(host);
+        if (host === "down.test") return Response.json({ error: { message: "boom" } }, { status: 503 });
+        return Response.json({ id: "ok", choices: [] });
+      },
+      async () => {},
+    );
+
+    for (let index = 0; index < 3; index += 1) {
+      await router.route(input, new AbortController().signal);
+    }
+    expect(calls.filter((host) => host === "down.test").length).toBe(3);
+  });
+});
+
+describe("token accounting", () => {
+  const usageConfig = () =>
+    parseConfig(`
+providers:
+  only:
+    type: openai-compatible
+    base_url: https://only.test/v1
+routes:
+  smart: [only/model-a]
+`);
+
+  test("counts tokens from a completion against the serving target", async () => {
+    const config = usageConfig();
+    const metrics = new Metrics();
+    const router = new Router(config, createAdapters(config), metrics, async () =>
+      Response.json({
+        id: "ok",
+        choices: [],
+        usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 },
+      }),
+    );
+
+    const result = await router.route(input, new AbortController().signal);
+    await result.response.text();
+    const output = metrics.render();
+    expect(output).toContain('tinyrouter_tokens_total{provider="only",model="model-a",kind="prompt"} 11');
+    expect(output).toContain('tinyrouter_tokens_total{provider="only",model="model-a",kind="completion"} 5');
+  });
+
+  test("counts tokens from a stream that reports usage", async () => {
+    const config = usageConfig();
+    const metrics = new Metrics();
+    const router = new Router(
+      config,
+      createAdapters(config),
+      metrics,
+      async () =>
+        new Response(
+          'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
+            'data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":8,"total_tokens":10}}\n\n' +
+            "data: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+
+    const result = await router.route({ ...input, stream: true }, new AbortController().signal);
+    await result.response.text();
+    expect(metrics.render()).toContain(
+      'tinyrouter_tokens_total{provider="only",model="model-a",kind="completion"} 8',
+    );
+  });
+
+  test("records nothing when the response carries no usage", async () => {
+    const config = usageConfig();
+    const metrics = new Metrics();
+    const router = new Router(config, createAdapters(config), metrics, async () =>
+      Response.json({ id: "ok", choices: [] }),
+    );
+
+    const result = await router.route(input, new AbortController().signal);
+    await result.response.text();
+    expect(metrics.render()).not.toContain("tinyrouter_tokens_total{");
+  });
+});
+
 describe("stalled responses", () => {
   const stallConfig = () =>
     parseConfig(`

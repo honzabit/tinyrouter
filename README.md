@@ -150,6 +150,9 @@ routing:
   retry_statuses: [429, 500, 502, 503, 504, 529]
   backoff_initial_ms: 200
   backoff_max_ms: 2000
+  circuit_breaker:
+    failures: 0
+    cooldown_ms: 30000
 
 providers:
   openai:
@@ -191,6 +194,12 @@ The native `openai`, `anthropic`, and `gemini` provider types require `api_key`.
 When `retries` is greater than zero, TinyRouter waits before retrying the same target: the provider's `Retry-After` (or `retry-after-ms`) when it sends one, otherwise an exponentially growing jittered delay starting at `backoff_initial_ms`. Either way a single wait never exceeds `backoff_max_ms`, so a provider announcing a long cooldown cannot hold a client request hostage, and a disconnecting client cancels the wait. Falling back to a different target is always immediate — its capacity is unrelated to the failure that triggered the fallback. Set `backoff_max_ms: 0` to restore immediate retries.
 
 Use `tinyrouter --check --config tinyrouter.yaml` to validate a file. `--print-config` shows the resolved configuration with API keys redacted.
+
+### Circuit breaking
+
+While a provider is down, every request pays its full `timeout_ms` before falling back. Setting `circuit_breaker.failures` to a positive number stops that: after that many consecutive retryable failures, a provider is skipped for `cooldown_ms` and its targets are recorded with outcome `circuit_open` instead of being contacted.
+
+It is off by default, because it is the one place where routing depends on what earlier requests did rather than only on the current one. Two rules keep it predictable: only retryable failures count, so a rejected request never marks a provider unhealthy; and open circuits are honoured only while some other target remains usable, so a request is never failed merely because everything is cooling down — the last target is attempted regardless. Any success closes the circuit immediately. Once the cooldown elapses the next request probes the provider, and a single further failure reopens it for another full cooldown. The state is in-memory and per process: nothing is persisted, and a restart starts clean.
 
 ### Request filters
 
@@ -286,6 +295,8 @@ Images are translated for both native adapters: Anthropic accepts http(s) URLs a
 | `GET /metrics` | None | Prometheus metrics |
 
 `/readyz` verifies that configuration and provider adapters loaded. It deliberately does not send paid health-check requests to providers.
+
+`/metrics` reports request and attempt counters, plus `tinyrouter_tokens_total{provider,model,kind}` for the tokens providers report, so spend can be attributed per model without a database. Tokens are counted as the response passes through, never by altering it. Completions always report usage; a streaming request reports it only when the client asks for it with `stream_options.include_usage`, because otherwise the provider never sends it — TinyRouter reports what it observes rather than estimating.
 
 TinyRouter logs a warning at startup when `server.api_key` is unset and the host is not loopback — that combination leaves `/v1` endpoints open to anyone who can reach the address. On SIGINT or SIGTERM it drains in-flight requests, including active streams, for up to ten seconds before closing the remaining connections.
 
