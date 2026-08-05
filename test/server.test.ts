@@ -147,6 +147,72 @@ routes:
     expect(cancelled).toBe(true);
   });
 
+  test("still reports an oversized body as too large when cancelling it fails", async () => {
+    const config = parseConfig(`
+server:
+  max_body_bytes: 1024
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({}),
+    });
+
+    // Tearing down an already-broken stream can reject. That is the gateway's
+    // problem, not a reason to tell the operator the client hung up.
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("x".repeat(4096)));
+      },
+      cancel() {
+        throw new Error("cancel failed");
+      },
+    });
+    const response = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", { method: "POST", body }),
+    );
+    const payload = (await response.json()) as { error: { code?: string } };
+    expect(response.status).toBe(413);
+    expect(payload.error.code).toBe("body_too_large");
+  });
+
+  test("reads a body delivered in many small chunks", async () => {
+    const config = parseConfig(`
+server:
+  body_timeout_ms: 1000
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    // Chunked encoding lets a client pick the framing, so per-chunk cost has
+    // to stay flat: the body limit counts bytes, not chunks.
+    const payload = JSON.stringify({ model: "fast", messages: [{ role: "user", content: "hi" }] });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        for (const character of payload) controller.enqueue(encoder.encode(character));
+        controller.close();
+      },
+    });
+    const response = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", { method: "POST", body }),
+    );
+    expect(response.status).toBe(200);
+  });
+
   test("applies redact filters before routing and reports the count", async () => {
     const config = parseConfig(`
 server:
@@ -313,7 +379,9 @@ routes:
     const body = new ReadableStream<Uint8Array>({
       async start(controller) {
         for (const part of parts) {
-          await Bun.sleep(120);
+          // Long enough that the parts together outlast the bound, so this
+          // only passes if each arrival actually restarts the clock.
+          await Bun.sleep(700);
           controller.enqueue(new TextEncoder().encode(part));
         }
         controller.close();

@@ -43,28 +43,29 @@ async function readBody(request: Request, maxBytes: number, idleMs: number): Pro
   let total = 0;
   if (request.body !== null) {
     const reader = request.body.getReader();
-    // One listener for the whole body rather than one per chunk.
-    const disconnected = new Promise<"disconnected">((resolve) => {
-      if (request.signal.aborted) resolve("disconnected");
-      else request.signal.addEventListener("abort", () => resolve("disconnected"), { once: true });
-    });
+    // Stopping by cancelling the reader keeps the loop down to the one promise
+    // it has to await anyway. Racing a longer-lived promise per chunk would
+    // attach a reaction per chunk, making the cost of a body scale with the
+    // framing the client chose rather than with the bytes maxBytes bounds.
+    let interrupted: "disconnected" | "idle" | undefined;
+    const interrupt = (reason: "disconnected" | "idle", because: string) => {
+      if (interrupted !== undefined) return;
+      interrupted = reason;
+      void reader.cancel(new Error(because)).catch(() => {});
+    };
+    const disconnect = () => interrupt("disconnected", "The client closed the request.");
+    // Bound the gap between chunks, not the whole upload: a slow client keeps
+    // its request, a silent one does not keep the handler.
+    const idleTimer = setTimeout(() => interrupt("idle", "Request body stalled."), idleMs);
+    if (request.signal.aborted) disconnect();
+    else request.signal.addEventListener("abort", disconnect, { once: true });
     try {
       while (true) {
-        // Bound the gap between chunks, not the whole upload: a slow client
-        // keeps its request, a silent one does not keep the handler.
-        let idleTimer: ReturnType<typeof setTimeout> | undefined;
-        const idle = new Promise<"idle">((resolve) => {
-          idleTimer = setTimeout(() => resolve("idle"), idleMs);
-        });
-        const result = await Promise.race([reader.read(), disconnected, idle]);
-        clearTimeout(idleTimer);
-
-        if (result === "disconnected") {
-          await reader.cancel(new Error("The client closed the request.")).catch(() => {});
-          throw clientClosedRequest();
-        }
-        if (result === "idle") {
-          await reader.cancel(new Error("Request body stalled.")).catch(() => {});
+        const { done, value } = await reader.read();
+        // Cancelling resolves the pending read as done, so why the read ended
+        // has to be settled before a done is taken at face value.
+        if (interrupted === "disconnected") throw clientClosedRequest();
+        if (interrupted === "idle") {
           throw new GatewayError({
             message: `The request body stopped arriving for ${idleMs}ms.`,
             status: 408,
@@ -72,13 +73,16 @@ async function readBody(request: Request, maxBytes: number, idleMs: number): Pro
             code: "body_timeout",
           });
         }
-        if (result.done) break;
-        total += result.value.byteLength;
+        if (done) break;
+        idleTimer.refresh();
+        total += value.byteLength;
         if (total > maxBytes) {
-          await reader.cancel(new Error("Request body too large."));
+          // Tearing down a broken stream can reject; that must not cost the
+          // caller the reason its request was refused.
+          await reader.cancel(new Error("Request body too large.")).catch(() => {});
           throw bodyTooLarge(maxBytes);
         }
-        chunks.push(result.value);
+        chunks.push(value);
       }
     } catch (error) {
       // A peer that vanishes mid-upload surfaces as a stream error. The
@@ -87,6 +91,8 @@ async function readBody(request: Request, maxBytes: number, idleMs: number): Pro
       if (error instanceof GatewayError) throw error;
       throw clientClosedRequest(error);
     } finally {
+      clearTimeout(idleTimer);
+      request.signal.removeEventListener("abort", disconnect);
       reader.releaseLock();
     }
   }
