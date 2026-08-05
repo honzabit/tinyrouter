@@ -163,6 +163,9 @@ export function createGateway(
     const url = new URL(request.url);
 
     const cors = corsHeaders(request, config.server.allow_origin);
+    // Whether this path may be read by a browser, decided once: three branches
+    // needed it and two of them originally shipped without it.
+    const shared = SHARED_PATHS.has(url.pathname) ? cors : {};
     // Only while CORS is switched on. Answering a preflight before the auth
     // gate is right for a browser flow and wrong for everyone else: off, the
     // gate has to keep applying to every method.
@@ -188,7 +191,10 @@ export function createGateway(
     // discloses nothing, and probes cannot carry a credential.
     if (
       config.server.protect_observability &&
-      (url.pathname === "/metrics" || url.pathname === "/readyz") &&
+      // /healthz stays open whatever this says - it reports only that the
+      // process is alive, and a probe cannot carry a credential. / is gated
+      // because it names the running version.
+      (url.pathname === "/metrics" || url.pathname === "/readyz" || url.pathname === "/") &&
       !authorized(request, config.server.api_key)
     ) {
       return withCors(
@@ -201,7 +207,7 @@ export function createGateway(
           }),
           id,
         ),
-        cors,
+        shared,
       );
     }
 
@@ -249,7 +255,7 @@ export function createGateway(
         // A shared endpoint shares its refusals too, or a browser reports a
         // CORS failure for what is really a bad key and the operator debugs
         // the wrong thing.
-        SHARED_PATHS.has(url.pathname) ? cors : {},
+        shared,
       );
     }
 
@@ -285,7 +291,7 @@ export function createGateway(
         ),
         // As with a refused key: a shared endpoint shares the reason it said
         // no, or the browser reports CORS and the wrong thing gets debugged.
-        SHARED_PATHS.has(url.pathname) ? cors : {},
+        shared,
       );
     }
 

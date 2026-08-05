@@ -23,7 +23,7 @@ Restart the gateway. Without that line the browser refuses to let the page read 
 
 ## The API key is optional
 
-`/readyz` and `/metrics` are unauthenticated, so provider health, traffic, token counts and circuit state all work with no credential at all. A key is only needed to list route aliases, which comes from `/v1/models` behind `server.api_key`.
+`/readyz` and `/metrics` are unauthenticated by default, so provider health, traffic, token counts and circuit state all work with no credential. A key is needed to list route aliases, which comes from `/v1/models`, and for everything else too if the gateway sets `server.protect_observability`. When one is entered it is sent to every request, so either arrangement works.
 
 When you enter one it is kept in `sessionStorage`, so closing the tab discards it rather than leaving a credential behind on a shared machine. The gateway address is kept in `localStorage`, since it is not a secret.
 

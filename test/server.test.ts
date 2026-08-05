@@ -742,6 +742,49 @@ routes:
     // Container and orchestrator probes must keep working: /healthz says only
     // that the process is alive, which discloses nothing worth a key.
     expect((await gateway.fetch(new Request("http://test/healthz"))).status).toBe(200);
+
+    // The root endpoint names the running version, which is the disclosure
+    // this flag exists to stop.
+    expect((await gateway.fetch(new Request("http://test/"))).status).toBe(401);
+  });
+
+  test("answers a browser preflight before demanding the key", async () => {
+    const config = parseConfig(`
+server:
+  api_key: gateway-secret
+  protect_observability: true
+  allow_origin: ["https://ui.example"]
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    // A browser never sends credentials on a preflight, so gating it would
+    // block the real request that does carry them - and the status page would
+    // fail against a gateway configured exactly as intended.
+    const preflight = await gateway.fetch(
+      new Request("http://test/metrics", {
+        method: "OPTIONS",
+        headers: { origin: "https://ui.example" },
+      }),
+    );
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("https://ui.example");
+
+    // The refusal still shares its headers, so the page reads 401 rather than
+    // reporting a CORS failure.
+    const unkeyed = await gateway.fetch(
+      new Request("http://test/metrics", { headers: { origin: "https://ui.example" } }),
+    );
+    expect(unkeyed.status).toBe(401);
+    expect(unkeyed.headers.get("access-control-allow-origin")).toBe("https://ui.example");
   });
 
   test("leaves the observability endpoints open unless asked to protect them", async () => {

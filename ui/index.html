@@ -255,7 +255,7 @@
       <p class="note">
         Reads <code>/readyz</code>, <code>/metrics</code> and <code>/v1/models</code>. Nothing is sent anywhere
         else, and the page holds no state but the gateway address. Only the routes list needs an API key;
-        health and metrics are unauthenticated on the gateway.
+        health and metrics need no key unless the gateway sets protect_observability.
       </p>
     </main>
 
@@ -413,7 +413,12 @@
           if (brace === -1) {
             const gap = line.lastIndexOf(" ");
             if (gap === -1) continue;
-            samples.push({ name: line.slice(0, gap), labels: {}, value: Number(line.slice(gap + 1)) });
+            const value = Number(line.slice(gap + 1));
+            // Exposition allows +Inf, -Inf and NaN. Summing one of those turns
+            // a whole panel into "NaN"; dropping the sample loses far less.
+            if (Number.isFinite(value)) {
+              samples.push({ name: line.slice(0, gap), labels: {}, value });
+            }
             continue;
           }
           const close = line.lastIndexOf("}");
@@ -424,11 +429,8 @@
             // One pass, so an escaped backslash cannot be re-read as an escape.
             labels[match[1]] = match[2].replace(/\\(.)/g, (_, c) => (c === "n" ? "\n" : c));
           }
-          samples.push({
-            name: line.slice(0, brace),
-            labels,
-            value: Number(line.slice(close + 1)),
-          });
+          const value = Number(line.slice(close + 1));
+          if (Number.isFinite(value)) samples.push({ name: line.slice(0, brace), labels, value });
         }
         return samples;
       }
@@ -708,7 +710,15 @@
         if (inFlight || base() === "") return;
         inFlight = true;
         try {
-          const [readyText, metricsText] = await Promise.all([getText("/readyz"), getText("/metrics")]);
+          // Sent to everything, not just the routes list: a gateway with
+          // protect_observability set answers /readyz and /metrics with 401
+          // too, and the key to satisfy them is already on screen.
+          const key = keyBox.value.trim();
+          const auth = key === "" ? {} : { authorization: `Bearer ${key}` };
+          const [readyText, metricsText] = await Promise.all([
+            getText("/readyz", auth),
+            getText("/metrics", auth),
+          ]);
           const ready = JSON.parse(readyText);
           const samples = parseMetrics(metricsText);
           clearError();
@@ -716,15 +726,13 @@
           renderProviders(ready, samples);
           renderTokens(samples);
 
-          // Routes are behind the gateway's API key; everything above is not.
-          const key = keyBox.value.trim();
+          // Routes are always behind the gateway's API key; the panels above are
+          // only when the operator has asked for it.
           if (key === "") {
             renderRoutes(null, "Enter the gateway API key to list route aliases.");
           } else {
             try {
-              const models = JSON.parse(
-                await getText("/v1/models", { authorization: `Bearer ${key}` }),
-              );
+              const models = JSON.parse(await getText("/v1/models", auth));
               renderRoutes(models, "");
             } catch (error) {
               renderRoutes(
@@ -734,12 +742,16 @@
             }
           }
         } catch (error) {
-          showError(
-            error.message,
-            error.blocked
-              ? `Either the gateway is not running, or it has not been told to share with this page — add allow_origin: ["${location.origin}"] under server: in tinyrouter.yaml and restart it.`
-              : "",
-          );
+          let hint = "";
+          if (error.blocked) {
+            hint = `Either the gateway is not running, or it has not been told to share with this page — add allow_origin: ["${location.origin}"] under server: in tinyrouter.yaml and restart it.`;
+          } else if (error.status === 401) {
+            hint =
+              keyBox.value.trim() === ""
+                ? "This gateway has protect_observability set, so even health and metrics need its API key. Enter it above."
+                : "That API key was refused.";
+          }
+          showError(error.message, hint);
         } finally {
           inFlight = false;
         }

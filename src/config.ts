@@ -185,6 +185,22 @@ function expandEnvironment(value: unknown, environment: Record<string, string | 
   return value;
 }
 
+// The container image sets TINYROUTER_HOST because a process bound to loopback
+// inside a container never receives a published port. Reading it only where the
+// file says nothing keeps an explicit host authoritative, and means the image
+// works for any config rather than only one that spells out the placeholder.
+function hostFromEnvironment(value: unknown, environment: Record<string, string | undefined>): unknown {
+  const fromEnvironment = environment.TINYROUTER_HOST;
+  if (fromEnvironment === undefined || fromEnvironment === "") return value;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const root = value as Record<string, unknown>;
+  const server = root.server ?? {};
+  if (server === null || typeof server !== "object" || Array.isArray(server)) return value;
+  const fields = server as Record<string, unknown>;
+  if (fields.host !== undefined) return value;
+  return { ...root, server: { ...fields, host: fromEnvironment } };
+}
+
 function validateReferences(config: TinyRouterConfig): TinyRouterConfig {
   for (const [route, targets] of Object.entries(config.routes)) {
     for (const target of targets) {
@@ -227,7 +243,7 @@ export function parseConfig(
     throw new ConfigError("Could not expand configuration environment variables.", { cause: error });
   }
 
-  const result = rawConfigSchema.safeParse(expanded);
+  const result = rawConfigSchema.safeParse(hostFromEnvironment(expanded, environment));
   if (!result.success) {
     const detail = result.error.issues
       .map((issue) => `${issue.path.join(".") || "config"}: ${issue.message}`)
