@@ -61,7 +61,7 @@ Every release attaches a standalone executable for Linux and macOS on x64 and ar
 curl -fsSL https://github.com/honzabit/tinyrouter/releases/latest/download/tinyrouter-linux-x64.tar.gz | tar -xz
 ```
 
-That leaves a `tinyrouter` executable in the working directory. Swap `linux-x64` for `linux-arm64`, `darwin-x64`, or `darwin-arm64` as needed, and check a download against `SHA256SUMS`.
+That leaves a `tinyrouter` executable and a `tinyrouter.example.yaml` in the working directory — copy the example to `tinyrouter.yaml` and edit it. The example travels inside the archive so it always matches the executable beside it, and is named `.example.` so extracting over an existing directory cannot overwrite a real configuration. Swap `linux-x64` for `linux-arm64`, `darwin-x64`, or `darwin-arm64` as needed, and check a download against `SHA256SUMS`.
 
 On macOS, extract with `tar` as above rather than double-clicking the archive: Finder copies its quarantine flag onto the extracted executable, and Gatekeeper then reports the executable as damaged because these builds are ad-hoc signed rather than notarized.
 

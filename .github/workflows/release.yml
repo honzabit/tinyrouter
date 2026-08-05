@@ -131,17 +131,26 @@ jobs:
       - name: Build executables
         run: |
           mkdir -p dist build
+          # The executable cannot start without a configuration, and the schema
+          # gains keys between versions - so the example travels inside the
+          # archive, where it is by construction the one this binary understands.
+          # Named .example. rather than tinyrouter.yaml so extracting into a
+          # directory that already has a real config cannot overwrite it.
+          cp tinyrouter.example.yaml build/
           for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
             bun build src/main.ts --compile --target="bun-$target" \
               --outfile build/tinyrouter
             chmod +x build/tinyrouter
-            tar -czf "dist/tinyrouter-$target.tar.gz" -C build tinyrouter
+            tar -czf "dist/tinyrouter-$target.tar.gz" -C build tinyrouter tinyrouter.example.yaml
             rm build/tinyrouter
           done
+          # Also loose on the release page, for anyone running the container who
+          # needs a file to mount and never downloads an archive.
+          cp tinyrouter.example.yaml dist/
           # Shipped alongside the executables so the status page in a release
           # is by construction the one that matches the gateway in it.
           cp ui/index.html dist/tinyrouter-ui.html
-          cd dist && sha256sum tinyrouter-*.tar.gz tinyrouter-ui.html > SHA256SUMS
+          cd dist && sha256sum tinyrouter-*.tar.gz tinyrouter-ui.html tinyrouter.example.yaml > SHA256SUMS
       - name: Verify the native archive
         run: |
           tar -xzf dist/tinyrouter-linux-x64.tar.gz -C build
@@ -151,13 +160,18 @@ jobs:
             echo "Executable reports $actual, expected ${expected#v}." >&2
             exit 1
           fi
+          expected="tinyrouter tinyrouter.example.yaml"
           for target in linux-arm64 darwin-x64 darwin-arm64; do
-            contents=$(tar -tzf "dist/tinyrouter-$target.tar.gz")
-            if [ "$contents" != "tinyrouter" ]; then
-              echo "tinyrouter-$target.tar.gz contains '$contents', expected a single tinyrouter." >&2
+            contents=$(tar -tzf "dist/tinyrouter-$target.tar.gz" | sort | tr '\n' ' ')
+            if [ "${contents% }" != "$expected" ]; then
+              echo "tinyrouter-$target.tar.gz contains '$contents', expected '$expected'." >&2
               exit 1
             fi
           done
+          # The shipped example must load, or the first thing a new user runs
+          # is a configuration error in a file they did not write.
+          TINYROUTER_API_KEY=x OPENAI_API_KEY=x ANTHROPIC_API_KEY=x GEMINI_API_KEY=x \
+            build/tinyrouter --check --config build/tinyrouter.example.yaml
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
