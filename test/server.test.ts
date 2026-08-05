@@ -323,6 +323,88 @@ routes:
     expect(logs.at(-1)?.level).toBe("warn");
   });
 
+  test("answers a cancelled request while its body is arriving", async () => {
+    const config = parseConfig(`
+server:
+  body_timeout_ms: 1000
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    // How a client actually leaves: the signal aborts while the body is still
+    // arriving. Stopping cancels the reader, which resolves the pending read
+    // as done, so the reason has to be carried separately - reading the abort
+    // back off the reader would make this indistinguishable from a body that
+    // simply ended.
+    const client = new AbortController();
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"model":"fast","messages":'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    setTimeout(() => client.abort(new Error("client hung up")), 20);
+    const startedAt = performance.now();
+    const response = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", {
+        method: "POST",
+        body,
+        signal: client.signal,
+      }),
+    );
+    const payload = (await response.json()) as { error: { code?: string } };
+    expect(response.status).toBe(499);
+    expect(payload.error.code).toBe("client_closed_request");
+    // Well inside body_timeout_ms: a leaving client is noticed, not waited out
+    // and then reported as a stall.
+    expect(performance.now() - startedAt).toBeLessThan(900);
+    expect(cancelled).toBe(true);
+  });
+
+  test("answers a request whose client left before it was read", async () => {
+    const config = parseConfig(`
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+routes:
+  fast: [mock/model-a]
+`);
+    const gateway = createGateway(config, {
+      logger: silentLogger,
+      fetch: async () => Response.json({ id: "ok", choices: [] }),
+    });
+
+    const client = new AbortController();
+    client.abort(new Error("client hung up"));
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"model":"fast","messages":[]}'));
+      },
+    });
+    const response = await gateway.fetch(
+      new Request("http://test/v1/chat/completions", {
+        method: "POST",
+        body,
+        signal: client.signal,
+      }),
+    );
+    const payload = (await response.json()) as { error: { code?: string } };
+    expect(response.status).toBe(499);
+    expect(payload.error.code).toBe("client_closed_request");
+  });
+
   test("gives up on a request body that stops arriving", async () => {
     const config = parseConfig(`
 server:
