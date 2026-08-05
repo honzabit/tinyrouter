@@ -286,4 +286,32 @@ providers:
     reject("https://ui.example/dashboard");
     reject("not-a-url");
   });
+
+  test("rejects an idle timeout that would preempt the body timeout", () => {
+    const build = (server: string) => `
+server:
+${server}
+providers:
+  mock:
+    type: openai-compatible
+    base_url: https://mock.test/v1
+`;
+    // Bun closes the connection at 10s, so the 30s body timeout could never
+    // fire: it would read as protection while providing none.
+    expect(() => parseConfig(build("  idle_timeout_seconds: 10\n  body_timeout_ms: 30000"))).toThrow(
+      ConfigError,
+    );
+    // Equal is a coin flip between a clean 408 and a bare connection close,
+    // which is the ambiguity the body timeout exists to remove.
+    expect(() => parseConfig(build("  idle_timeout_seconds: 30\n  body_timeout_ms: 30000"))).toThrow(
+      ConfigError,
+    );
+    // 0 disables Bun's idle timeout entirely, so nothing preempts anything.
+    expect(
+      parseConfig(build("  idle_timeout_seconds: 0\n  body_timeout_ms: 600000")).server.body_timeout_ms,
+    ).toBe(600_000);
+    expect(
+      parseConfig(build("  idle_timeout_seconds: 60\n  body_timeout_ms: 30000")).server.idle_timeout_seconds,
+    ).toBe(60);
+  });
 });

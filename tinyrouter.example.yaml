@@ -2,6 +2,9 @@ server:
   host: 0.0.0.0
   port: 8080
   api_key: ${TINYROUTER_API_KEY}
+  # Bun's own connection idle timeout, in seconds. 0 disables it. If set, it
+  # must be longer than body_timeout_ms below, or it would close the connection
+  # before that timeout could answer.
   idle_timeout_seconds: 0
   # Bounds the gap between request-body chunks: a slow upload is fine, one
   # that stops arriving is not.

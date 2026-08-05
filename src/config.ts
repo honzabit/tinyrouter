@@ -78,6 +78,14 @@ const rawConfigSchema = z.strictObject({
         .min(1)
         .optional(),
     })
+    // Bun closes an idle connection on its own. If it gets there first the body
+    // timeout can never fire, leaving a setting that reads as protection while
+    // providing none - and the client a bare close instead of its 408.
+    .refine(
+      (server) =>
+        server.idle_timeout_seconds === 0 || server.idle_timeout_seconds * 1_000 > server.body_timeout_ms,
+      "idle_timeout_seconds must be longer than body_timeout_ms, or 0 to disable it",
+    )
     .prefault({}),
   routing: z
     .strictObject({
