@@ -17,6 +17,7 @@ export class GatewayError extends Error {
   readonly status: number;
   readonly type: ErrorType;
   readonly code?: string;
+  readonly param?: string;
   readonly retryable: boolean;
   readonly details?: JsonValue;
   readonly attempts?: AttemptRecord[];
@@ -26,6 +27,7 @@ export class GatewayError extends Error {
     status: number;
     type: ErrorType;
     code?: string;
+    param?: string;
     retryable?: boolean;
     details?: JsonValue;
     attempts?: AttemptRecord[];
@@ -37,6 +39,7 @@ export class GatewayError extends Error {
     this.type = options.type;
     this.retryable = options.retryable ?? false;
     if (options.code !== undefined) this.code = options.code;
+    if (options.param !== undefined) this.param = options.param;
     if (options.details !== undefined) this.details = options.details;
     if (options.attempts !== undefined) this.attempts = options.attempts;
   }
@@ -61,6 +64,7 @@ export function errorResponse(error: GatewayError, requestId?: string): Response
       message: error.message,
       type: error.type,
       ...(error.code === undefined ? {} : { code: error.code }),
+      ...(error.param === undefined ? {} : { param: error.param }),
       ...(requestId === undefined ? {} : { request_id: requestId }),
     },
   };

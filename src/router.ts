@@ -4,6 +4,7 @@ import { clientClosedRequest, GatewayError } from "./errors.ts";
 import { createFilterChain, filtersForProvider } from "./filters.ts";
 import type { Metrics } from "./metrics.ts";
 import type { ProviderAdapter } from "./providers/provider.ts";
+import { assertSupportedRequirements } from "./providers/requirements.ts";
 import { withStallTimeout } from "./sse.ts";
 import type { AttemptRecord, ChatCompletionRequest, ResolvedTarget, RoutedResponse } from "./types.ts";
 import { observeUsage } from "./usage.ts";
@@ -107,6 +108,7 @@ function failureWithAttempts(error: GatewayError, attempts: AttemptRecord[]): Ga
     status: error.status,
     type: error.type,
     ...(error.code === undefined ? {} : { code: error.code }),
+    ...(error.param === undefined ? {} : { param: error.param }),
     retryable: error.retryable,
     ...(error.details === undefined ? {} : { details: error.details }),
     attempts,
@@ -266,17 +268,22 @@ export class Router {
         }, adapter.timeoutMs);
 
         try {
+          if (callerSignal.aborted) throw clientClosedRequest();
           let upstreamRequest: Request;
           try {
+            assertSupportedRequirements(filtered.input, adapter.type);
             upstreamRequest = adapter.createRequest(filtered.input, target.model, controller.signal);
           } catch (caught) {
-            // A target that cannot represent this content is in the same
-            // position as one a filter refused: it may not receive the request,
-            // which says nothing about the targets after it. Retrying the
-            // translation would fail identically, so the whole target is
-            // skipped rather than the request being failed with a capable
-            // target still untried.
-            if (!(caught instanceof GatewayError) || caught.code !== "unsupported_content") throw caught;
+            // Content and output requirements follow the same rule: skip a
+            // target whose adapter cannot preserve them, before any network
+            // call. This catch deliberately excludes upstream HTTP errors.
+            // Retrying the same translation would fail identically.
+            if (
+              !(caught instanceof GatewayError) ||
+              (caught.code !== "unsupported_content" && caught.code !== "unsupported_parameter")
+            ) {
+              throw caught;
+            }
             clearTimeout(timer);
             unsupported = caught;
             break;
@@ -496,6 +503,8 @@ export class Router {
           durationMs: 0,
           outcome: "unsupported",
           errorType: unsupported.type,
+          ...(unsupported.code === undefined ? {} : { errorCode: unsupported.code }),
+          ...(unsupported.param === undefined ? {} : { parameter: unsupported.param }),
         });
       }
     }

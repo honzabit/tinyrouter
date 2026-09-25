@@ -2,6 +2,21 @@
 
 Notable changes per release. Versions follow semantic versioning with the 0.x caveat that **minor bumps carry the breaking changes**; patches are fixes. Dates are UTC.
 
+## Unreleased
+
+### Breaking
+
+- Native adapters no longer silently discard protected output requirements. Anthropic is skipped for JSON response formats and strict tool schemas. Gemini is skipped for explicit strict JSON schemas, strict tool schemas, and `parallel_tool_calls: false` when tools are enabled. Routes that previously succeeded only by dropping these constraints now select a later compatible target or return `400 unsupported_parameter`. This routing-contract change belongs in a minor release.
+
+### Added
+
+- Capability errors identify the unsupported field in `error.param`. Attempt logs include `errorCode` and `parameter` alongside the existing `unsupported` outcome, without recording parameter values or request bodies.
+- Regression coverage for constrained fallback, preserved outgoing payloads, unsupported-target skips, upstream error precedence, circuit/metric isolation, direct targets, cancellation, and no replay after a selected stream fails.
+
+### Unchanged
+
+- OpenAI and generic OpenAI-compatible requests remain passthrough. Gemini's existing non-strict JSON translation and Anthropic's serial-tool translation are retained. Capability skips do not trigger retries or count as provider failures; real upstream errors retain the existing retry policy. No provider capability catalog, new dependency, configuration option, or response validator is introduced.
+
 ## 0.7.0 — 2026-08-05
 
 ### Changed
