@@ -335,8 +335,9 @@ describe("request requirements at the routing boundary", () => {
         controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"first"}}]}\n\n'));
       },
     });
-    const { gateway, calls } = setup("anthropic/model, first/model, compatible/model", () =>
-      new Response(source, { headers: { "content-type": "text/event-stream" } }),
+    const { gateway, calls } = setup(
+      "anthropic/model, first/model, compatible/model",
+      () => new Response(source, { headers: { "content-type": "text/event-stream" } }),
     );
     const response = await gateway.fetch(request({ stream: true, tools: [strictTool] }));
     expect(response.status).toBe(200);
