@@ -149,6 +149,72 @@ const unsupportedCases: Array<{ name: string; targets: string; extra: JsonObject
     extra: { parallel_tool_calls: "false" },
     param: "parallel_tool_calls",
   },
+  {
+    name: "several choices across both native adapters",
+    targets: "anthropic/model, gemini/model",
+    extra: { n: 3 },
+    param: "n",
+  },
+  {
+    name: "malformed choice count",
+    targets: "anthropic/model, gemini/model",
+    extra: { n: "1" },
+    param: "n",
+  },
+  {
+    name: "log probabilities across both native adapters",
+    targets: "anthropic/model, gemini/model",
+    extra: { logprobs: true, top_logprobs: 2 },
+    param: "logprobs",
+  },
+  {
+    name: "top log probabilities without logprobs",
+    targets: "anthropic/model, gemini/model",
+    extra: { top_logprobs: 0 },
+    param: "top_logprobs",
+  },
+  {
+    name: "malformed logprobs setting",
+    targets: "anthropic/model, gemini/model",
+    extra: { logprobs: "true" },
+    param: "logprobs",
+  },
+  {
+    name: "reasoning disabled across both native adapters",
+    targets: "anthropic/model, gemini/model",
+    extra: { reasoning_effort: "none" },
+    param: "reasoning_effort",
+  },
+  {
+    name: "Anthropic minimal reasoning",
+    targets: "anthropic/model",
+    extra: { reasoning_effort: "minimal" },
+    param: "reasoning_effort",
+  },
+  {
+    name: "Gemini extra-high reasoning",
+    targets: "gemini/model",
+    extra: { reasoning_effort: "xhigh" },
+    param: "reasoning_effort",
+  },
+  {
+    name: "Gemini maximum reasoning",
+    targets: "gemini/model",
+    extra: { reasoning_effort: "max" },
+    param: "reasoning_effort",
+  },
+  {
+    name: "unknown reasoning effort",
+    targets: "anthropic/model, gemini/model",
+    extra: { reasoning_effort: "private-effort-marker" },
+    param: "reasoning_effort",
+  },
+  {
+    name: "malformed reasoning effort",
+    targets: "anthropic/model, gemini/model",
+    extra: { reasoning_effort: 3 },
+    param: "reasoning_effort",
+  },
 ];
 
 describe("request requirements at the routing boundary", () => {
@@ -170,6 +236,7 @@ describe("request requirements at the routing boundary", () => {
     expect(attempts.at(-1)).toMatchObject({ errorCode: "unsupported_parameter", parameter: param });
     expect(JSON.stringify(logs)).not.toContain("private-prompt-marker");
     expect(JSON.stringify(logs)).not.toContain("private-format-marker");
+    expect(JSON.stringify(logs)).not.toContain("private-effort-marker");
   });
 
   test("strict constraints survive a real fallback without calling lossy adapters", async () => {
@@ -203,6 +270,65 @@ describe("request requirements at the routing boundary", () => {
     ]);
   });
 
+  test("response-shape requirements survive a real fallback without calling lossy adapters", async () => {
+    const { gateway, calls, logs } = setup(
+      "first/model, anthropic/model, gemini/model, compatible/model",
+      (call) =>
+        call.host === "first.test"
+          ? Response.json({ error: { message: "busy" } }, { status: 503 })
+          : success(call.host),
+    );
+    const extra = { n: 2, logprobs: true, top_logprobs: 3, reasoning_effort: "high", seed: 7 };
+    const response = await gateway.fetch(request(extra));
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(response.headers.get("x-tinyrouter-provider")).toBe("compatible");
+    expect(calls.map((call) => call.host)).toEqual(["first.test", "compatible.test"]);
+    for (const call of calls) expect(call.body).toMatchObject(extra);
+    expect(logs.find((record) => record.event === "request_completed")?.attempts).toEqual([
+      expect.objectContaining({ outcome: "fallback", target: "first/model" }),
+      expect.objectContaining({ outcome: "unsupported", target: "anthropic/model", parameter: "n" }),
+      expect.objectContaining({ outcome: "unsupported", target: "gemini/model", parameter: "n" }),
+      expect.objectContaining({ outcome: "success", target: "compatible/model" }),
+    ]);
+  });
+
+  test.each([
+    { targets: "anthropic/model, gemini/model", effort: "minimal", skipped: "anthropic/model" },
+    { targets: "gemini/model, anthropic/model", effort: "xhigh", skipped: "gemini/model" },
+    { targets: "gemini/model, anthropic/model", effort: "max", skipped: "gemini/model" },
+  ])(
+    "reasoning effort $effort skips only the adapter without that level",
+    async ({ targets, effort, skipped }) => {
+      const { gateway, calls, logs } = setup(targets);
+      const response = await gateway.fetch(request({ reasoning_effort: effort }));
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(calls).toHaveLength(1);
+      if (calls[0]?.host === "gemini.test") {
+        expect(calls[0].body.generationConfig).toEqual({ thinkingConfig: { thinkingLevel: effort } });
+      } else {
+        expect(calls[0]?.body).toMatchObject({ thinking: { type: "adaptive" }, output_config: { effort } });
+      }
+      expect(logs.find((record) => record.event === "request_completed")?.attempts).toEqual([
+        expect.objectContaining({ outcome: "unsupported", target: skipped, parameter: "reasoning_effort" }),
+        expect.objectContaining({ outcome: "success" }),
+      ]);
+    },
+  );
+
+  test.each(["anthropic", "gemini"])(
+    "drops the best-effort seed hint for %s instead of skipping",
+    async (provider) => {
+      const { gateway, calls } = setup(`${provider}/model`);
+      const response = await gateway.fetch(request({ seed: 7 }));
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(calls).toHaveLength(1);
+      expect(JSON.stringify(calls[0]?.body)).not.toContain("seed");
+    },
+  );
+
   test.each(["json_object", "json_schema"])("preserves Gemini's non-strict %s translation", async (type) => {
     const { gateway, calls } = setup("anthropic/model, gemini/model");
     const response = await gateway.fetch(
@@ -230,7 +356,16 @@ describe("request requirements at the routing boundary", () => {
   });
 
   test.each(["anthropic", "gemini"])("keeps ordinary requests working through %s", async (provider) => {
-    for (const extra of [{}, { response_format: null }, { response_format: { type: "text" } }]) {
+    for (const extra of [
+      {},
+      { response_format: null },
+      { response_format: { type: "text" } },
+      { n: 1 },
+      { n: null },
+      { logprobs: false },
+      { logprobs: null, top_logprobs: null },
+      { reasoning_effort: null },
+    ]) {
       const { gateway, calls } = setup(`${provider}/model`);
       const response = await gateway.fetch(request(extra));
       expect(response.status).toBe(200);
@@ -276,6 +411,11 @@ describe("request requirements at the routing boundary", () => {
       response_format: { type: "vendor_format", config: { custom: true } },
       tools: [strictTool],
       parallel_tool_calls: false,
+      n: 3,
+      logprobs: true,
+      top_logprobs: 2,
+      reasoning_effort: "none",
+      seed: 7,
     };
     const response = await gateway.fetch(request(extra));
     expect(response.status).toBe(200);
