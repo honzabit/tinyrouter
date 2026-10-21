@@ -258,10 +258,14 @@ function buildAnthropicBody(
   if (tools !== undefined && input.parallel_tool_calls === false && toolChoice?.type !== "none") {
     toolChoice = { ...(toolChoice ?? { type: "auto" }), disable_parallel_tool_use: true };
   }
+  const effort = typeof input.reasoning_effort === "string" ? input.reasoning_effort : undefined;
   // Sampling parameters are hints, like seed: no single response shows whether
   // they were honored, so dropping them changes no contract the client can check.
+  // They also give way to reasoning_effort. Every model that accepts adaptive
+  // thinking rejects a custom temperature, and a top_p below 0.95, while it is
+  // on, so honoring the hint would cost the requirement the client also sent.
   const samplingFields =
-    sampling === "drop"
+    sampling === "drop" || effort !== undefined
       ? {}
       : {
           ...(typeof input.temperature === "number" ? { temperature: input.temperature } : {}),
@@ -273,7 +277,6 @@ function buildAnthropicBody(
       : typeof input.max_tokens === "number"
         ? input.max_tokens
         : defaultMaxTokens;
-  const effort = typeof input.reasoning_effort === "string" ? input.reasoning_effort : undefined;
 
   return {
     model,

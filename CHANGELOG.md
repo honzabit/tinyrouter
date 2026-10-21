@@ -13,6 +13,7 @@ Notable changes per release. Versions follow semantic versioning with the 0.x ca
 
 - Two `anthropic` provider options for models that reject what the adapter forwards. Without them, each rejection is an upstream `400`, which ends routing even when a later target could serve the request.
   - `sampling_parameters: drop` leaves out `temperature` and `top_p`. Claude Opus 4.7 and later and the Claude 5 generation reject non-default values. On API version `2026-10-21`, every model rejects any value. Like `seed`, these are best-effort hints, so the target is still used.
+  - Whatever `sampling_parameters` says, `temperature` and `top_p` are left out whenever the adapter turns adaptive thinking on for `reasoning_effort`. Every Claude model that accepts adaptive thinking rejects a custom `temperature` alongside it. So `temperature: 0.7` with `reasoning_effort` to `claude-sonnet-4-6` would otherwise be an upstream `400`; a request that worked before `reasoning_effort` was translated. The smoke check now sends that request to Anthropic.
   - `forced_tool_choice: skip` skips the provider's targets for `tool_choice: "required"` or a named function. Claude Opus 5.5, Sonnet 5.5, Fable 5.1, and Mythos 5.1 reject these. A forced choice is a protected requirement and is never weakened to `auto`. Routing continues to a target that can honor it, or fails with `400 unsupported_parameter` and `error.param: "tool_choice"`.
 
 ### Changed

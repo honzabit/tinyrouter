@@ -478,7 +478,7 @@ function compatibleResponse(): Response {
 }
 
 describe("Anthropic provider options", () => {
-  test("forwards temperature and top_p by default", async () => {
+  test("forwards temperature and top_p by default without reasoning_effort", async () => {
     let upstreamBody: Record<string, unknown> | undefined;
     const gateway = gatewayFor(ANTHROPIC_PROVIDER, "anthropic/claude-test", async (request) => {
       upstreamBody = (await request.json()) as Record<string, unknown>;
@@ -488,7 +488,32 @@ describe("Anthropic provider options", () => {
     await gateway.fetch(completionRequest({ temperature: 0.7, top_p: 0.9 }));
     expect(upstreamBody?.temperature).toBe(0.7);
     expect(upstreamBody?.top_p).toBe(0.9);
+    expect(upstreamBody).not.toHaveProperty("thinking");
   });
+
+  test.each(["forward", "drop"])(
+    "leaves out temperature and top_p whenever reasoning_effort turns thinking on: %s",
+    async (mode) => {
+      let upstreamBody: Record<string, unknown> | undefined;
+      const gateway = gatewayFor(
+        `${ANTHROPIC_PROVIDER}\n    sampling_parameters: ${mode}`,
+        "anthropic/claude-test",
+        async (request) => {
+          upstreamBody = (await request.json()) as Record<string, unknown>;
+          return anthropicMessageResponse();
+        },
+      );
+
+      const response = await gateway.fetch(
+        completionRequest({ reasoning_effort: "low", temperature: 0.7, top_p: 0.9 }),
+      );
+      expect(response.status).toBe(200);
+      expect(upstreamBody?.thinking).toEqual({ type: "adaptive" });
+      expect(upstreamBody?.output_config).toEqual({ effort: "low" });
+      expect(upstreamBody).not.toHaveProperty("temperature");
+      expect(upstreamBody).not.toHaveProperty("top_p");
+    },
+  );
 
   test("drops temperature and top_p with sampling_parameters: drop", async () => {
     let upstreamBody: Record<string, unknown> | undefined;
