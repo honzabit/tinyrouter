@@ -63,6 +63,17 @@ describe("HTTP gateway", () => {
     expect(response.status).toBe(401);
   });
 
+  test("accepts the bearer scheme in any case, but only with the right key", async () => {
+    const gateway = createTestGateway();
+    const status = async (authorization: string) =>
+      (await gateway.fetch(new Request("http://test/v1/models", { headers: { authorization } }))).status;
+    expect(await status("bearer gateway-secret")).toBe(200);
+    expect(await status("BEARER gateway-secret")).toBe(200);
+    expect(await status("bearer wrong-secret")).toBe(401);
+    expect(await status("Basic gateway-secret")).toBe(401);
+    expect(await status("Bearergateway-secret")).toBe(401);
+  });
+
   test("routes a valid OpenAI-compatible request", async () => {
     const gateway = createTestGateway();
     const response = await gateway.fetch(

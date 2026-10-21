@@ -96,6 +96,19 @@ function splitTarget(target: string): ResolvedTarget {
   };
 }
 
+// An attempt that produced nothing to serve, whichever way it failed: the
+// provider answered with an error status, or never usefully answered at all.
+interface AttemptFailure {
+  error: GatewayError;
+  // Whether this failure may be retried or fallen back from at all.
+  canMove: boolean;
+  durationMs: number;
+  // Present only when the provider answered with a status line.
+  status?: number;
+  metricStatus: string;
+  retryAfterMs?: number | undefined;
+}
+
 function attemptOutcome(options: { canRetry: boolean; hasFallback: boolean }): AttemptRecord["outcome"] {
   if (options.canRetry) return "retry";
   if (options.hasFallback) return "fallback";
@@ -267,6 +280,9 @@ export class Router {
           controller.abort(new Error(`Provider response timeout after ${adapter.timeoutMs}ms.`));
         }, adapter.timeoutMs);
 
+        // Both ways an attempt can fail settle into this, so one path below
+        // records, retries, and falls back from either of them.
+        let failure: AttemptFailure;
         try {
           if (callerSignal.aborted) throw clientClosedRequest();
           let upstreamRequest: Request;
@@ -364,58 +380,27 @@ export class Router {
             return { response: served, target, attempts, redactions: filtered.redactions };
           }
 
-          clearTimeout(timer);
+          // The error body is still arriving, so the timer has to keep running
+          // until it is read: a provider can send an error status and then go
+          // silent. If it fires, the abort fails the read and the error is
+          // classified from the status alone.
           const error = await adapter.parseError(upstreamResponse);
-          lastError = error;
+          clearTimeout(timer);
           const canMove = this.config.routing.retry_statuses.includes(upstreamResponse.status);
-          const willRetry = canMove && hasRetry;
-          const backoffMs = willRetry
-            ? retryBackoffMs({
-                attempt: retry,
-                initialMs: this.config.routing.backoff_initial_ms,
-                maxMs: this.config.routing.backoff_max_ms,
-                retryAfterMs: parseRetryAfter(upstreamResponse.headers, Date.now()),
-              })
-            : 0;
-          const outcome = attemptOutcome({
-            canRetry: willRetry,
-            hasFallback: canMove && hasFallback,
-          });
-          attempts.push({
-            target: target.label,
-            attempt: attemptNumber,
-            status: upstreamResponse.status,
-            durationMs,
-            outcome,
-            errorType: error.type,
-            ...(backoffMs > 0 ? { retryDelayMs: backoffMs } : {}),
-            ...redacted,
-          });
-          this.metrics.attempt({
-            provider: target.providerId,
-            model: target.model,
-            status: String(upstreamResponse.status),
-          });
           // A server error is a provider failure whether or not the operator
           // wants it retried. A 4xx is the client's problem and proves the
           // provider is alive, so it clears earlier failures - unless this
           // request already blamed it, which that answer does not undo.
           if (canMove || upstreamResponse.status >= 500) blame(target.providerId);
           else if (!blamed.has(target.providerId)) this.breaker.recordSuccess(target.providerId);
-          if (!canMove) throw failureWithAttempts(error, attempts);
-          if (hasRetry) {
-            if (backoffMs > 0) {
-              await this.waitFn(backoffMs, callerSignal);
-              // The client gave up while the gateway was waiting to retry. The
-              // provider's error is real and already counted against it, but it
-              // is not what became of this request.
-              if (callerSignal.aborted) {
-                throw failureWithAttempts(clientClosedRequest(error), attempts);
-              }
-            }
-            continue;
-          }
-          break;
+          failure = {
+            error,
+            canMove,
+            durationMs,
+            status: upstreamResponse.status,
+            metricStatus: String(upstreamResponse.status),
+            retryAfterMs: parseRetryAfter(upstreamResponse.headers, Date.now()),
+          };
         } catch (caught) {
           clearTimeout(timer);
           if (caught instanceof GatewayError && caught.attempts !== undefined) throw caught;
@@ -445,53 +430,54 @@ export class Router {
                   retryable: true,
                   cause: caught,
                 });
-          lastError = error;
-          const canMove = error.retryable;
-          const willRetry = canMove && hasRetry;
-          const backoffMs = willRetry
-            ? retryBackoffMs({
-                attempt: retry,
-                initialMs: this.config.routing.backoff_initial_ms,
-                maxMs: this.config.routing.backoff_max_ms,
-              })
-            : 0;
-          const outcome = attemptOutcome({
-            canRetry: willRetry,
-            hasFallback: canMove && hasFallback,
-          });
-          attempts.push({
-            target: target.label,
-            attempt: attemptNumber,
+          if (error.retryable) blame(target.providerId);
+          failure = {
+            error,
+            canMove: error.retryable,
             durationMs,
-            outcome,
-            errorType: error.type,
-            ...(backoffMs > 0 ? { retryDelayMs: backoffMs } : {}),
-            ...redacted,
-          });
-          this.metrics.attempt({
-            provider: target.providerId,
-            model: target.model,
-            status: timedOut
+            metricStatus: timedOut
               ? "timeout"
               : caught instanceof GatewayError
                 ? String(error.status)
                 : "network_error",
-          });
-          if (canMove) blame(target.providerId);
-          if (!canMove) throw failureWithAttempts(error, attempts);
-          if (hasRetry) {
-            if (backoffMs > 0) {
-              await this.waitFn(backoffMs, callerSignal);
-              // The client gave up while the gateway was waiting to retry. The
-              // provider's error is real and already counted against it, but it
-              // is not what became of this request.
-              if (callerSignal.aborted) {
-                throw failureWithAttempts(clientClosedRequest(error), attempts);
-              }
-            }
-            continue;
+          };
+        }
+
+        lastError = failure.error;
+        const willRetry = failure.canMove && hasRetry;
+        const backoffMs = willRetry
+          ? retryBackoffMs({
+              attempt: retry,
+              initialMs: this.config.routing.backoff_initial_ms,
+              maxMs: this.config.routing.backoff_max_ms,
+              retryAfterMs: failure.retryAfterMs,
+            })
+          : 0;
+        attempts.push({
+          target: target.label,
+          attempt: attemptNumber,
+          ...(failure.status === undefined ? {} : { status: failure.status }),
+          durationMs: failure.durationMs,
+          outcome: attemptOutcome({ canRetry: willRetry, hasFallback: failure.canMove && hasFallback }),
+          errorType: failure.error.type,
+          ...(backoffMs > 0 ? { retryDelayMs: backoffMs } : {}),
+          ...redacted,
+        });
+        this.metrics.attempt({
+          provider: target.providerId,
+          model: target.model,
+          status: failure.metricStatus,
+        });
+        if (!failure.canMove) throw failureWithAttempts(failure.error, attempts);
+        if (!willRetry) break;
+        if (backoffMs > 0) {
+          await this.waitFn(backoffMs, callerSignal);
+          // The client gave up while the gateway was waiting to retry. The
+          // provider's error is real and already counted against it, but it
+          // is not what became of this request.
+          if (callerSignal.aborted) {
+            throw failureWithAttempts(clientClosedRequest(failure.error), attempts);
           }
-          break;
         }
       }
 

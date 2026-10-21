@@ -158,6 +158,43 @@ routes:
     expect(result.target.providerId).toBe("backup");
     expect(result.attempts[0]?.errorType).toBe("provider_timeout_error");
   });
+
+  test("falls back when a provider sends an error status and then stalls its body", async () => {
+    const config = parseConfig(`
+providers:
+  slow:
+    type: openai-compatible
+    base_url: https://slow.test/v1
+    timeout_ms: 20
+  backup:
+    type: openai-compatible
+    base_url: https://backup.test/v1
+routes:
+  smart: [slow/model-a, backup/model-b]
+`);
+    const router = new Router(config, createAdapters(config), new Metrics(), async (request) => {
+      if (new URL(request.url).hostname === "slow.test") {
+        // The status line arrives at once; the error body never does. Like a
+        // real fetch, aborting the request errors the body being read.
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"error":'));
+              request.signal.addEventListener("abort", () => controller.error(request.signal.reason), {
+                once: true,
+              });
+            },
+          }),
+          { status: 500 },
+        );
+      }
+      return Response.json({ id: "ok", choices: [] });
+    });
+
+    const result = await router.route(input, new AbortController().signal);
+    expect(result.target.providerId).toBe("backup");
+    expect(result.attempts[0]).toMatchObject({ target: "slow/model-a", status: 500, outcome: "fallback" });
+  });
 });
 
 const singleTargetConfig = (routingYaml: string) =>
