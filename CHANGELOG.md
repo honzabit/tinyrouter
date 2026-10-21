@@ -2,6 +2,21 @@
 
 Notable changes per release. Versions follow semantic versioning with the 0.x caveat that **minor bumps carry the breaking changes**; patches are fixes. Dates are UTC.
 
+## 0.9.0 — Unreleased
+
+### Breaking
+
+- Native adapters no longer silently drop `n`, `logprobs`, or `top_logprobs`. Anthropic and Gemini targets are skipped for `n` other than 1, `logprobs: true`, and any `top_logprobs`, because neither translation can return extra choices or token log probabilities. Routes that previously succeeded by returning one choice without log probabilities now select a later compatible target or return `400 unsupported_parameter`.
+- `reasoning_effort` now reaches native providers instead of being dropped. Anthropic receives `thinking: {type: "adaptive"}` with `output_config.effort` for `low`, `medium`, `high`, `xhigh`, and `max`. Gemini receives `generationConfig.thinkingConfig.thinkingLevel` for `minimal`, `low`, `medium`, and `high`. A value with no level of the same name (`none` and `minimal` on Anthropic; `none`, `xhigh`, and `max` on Gemini), or an unknown value, skips the target. Models without these controls (Claude 4.5 and older, Gemini 2.5) previously ignored the field; they now reject such requests with an upstream `400`, which ends routing. Anthropic counts thinking toward `max_tokens`, so requests that rely on `default_max_tokens: 4096` may need a larger limit at `high` effort and above.
+
+### Changed
+
+- The smoke check's default Anthropic model is now `claude-sonnet-4-6`. It accepts adaptive thinking and forced tool use, and Anthropic and Gemini each get a live `reasoning_effort: "low"` completion. The `fast` example route keeps `claude-haiku-4-5`, with a comment saying it cannot take `reasoning_effort`. Local-fallback examples now use `claude-sonnet-4-6`.
+
+### Unchanged
+
+- `seed` is still dropped by both native adapters. It is a best-effort hint, not a protected requirement. TinyRouter does not translate `n` to Gemini's `candidateCount`, because Gemini 3 and later reject values above 1. Thinking output is neither surfaced in responses nor sent back on later turns. OpenAI and generic OpenAI-compatible requests remain passthrough. Skips follow the 0.8.0 rules: they are not retried, not counted as provider attempts, and do not affect circuit breakers. They are logged by parameter name without values.
+
 ## 0.8.0 — 2026-09-27
 
 ### Breaking

@@ -15,7 +15,7 @@ bun run build
 
 # Smoke tests against real providers
 
-Unit tests mock every upstream. `bun run smoke` complements them with live traffic: it starts a real gateway configured with whichever providers have credentials in the environment, then sends a completion, a streamed completion, and a forced tool call through each one.
+Unit tests mock every upstream. `bun run smoke` complements them with live traffic: it starts a real gateway configured with whichever providers have credentials in the environment, then sends a completion, a streamed completion, and a forced tool call through each one. Anthropic and Gemini also get a completion with `reasoning_effort: "low"`, because only a live provider can confirm that a model accepts the thinking control it is translated to.
 
 ```bash
 OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... bun run smoke
@@ -25,7 +25,7 @@ OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... bun run smoke
 SMOKE_LOCAL_BASE_URL=http://localhost:11434/v1 SMOKE_LOCAL_MODEL=qwen2.5:0.5b bun run smoke
 ```
 
-Providers without credentials are skipped, and the models are overridable via `SMOKE_OPENAI_MODEL`, `SMOKE_ANTHROPIC_MODEL`, and `SMOKE_GEMINI_MODEL`. A check the provider rate limits is reported as skipped rather than failed, since a quota says nothing about the gateway; a run where every check was rate limited still fails, because it verified nothing.
+Providers without credentials are skipped, and the models are overridable via `SMOKE_OPENAI_MODEL`, `SMOKE_ANTHROPIC_MODEL`, and `SMOKE_GEMINI_MODEL`. The Anthropic model, `claude-sonnet-4-6` by default, must accept both adaptive thinking and forced tool use: Claude 4.5 models reject the first, and Opus 5.5, Sonnet 5.5, Fable 5.1, and Mythos 5.1 reject the second. The Gemini model must accept `thinkingLevel: "low"`, which Gemini 2.5 models do not. A check the provider rate limits is reported as skipped rather than failed, since a quota says nothing about the gateway; a run where every check was rate limited still fails, because it verified nothing.
 
 The Smoke workflow runs the same script on demand from the Actions tab, and the release workflow runs it as a gate. One job needs no secrets at all: it installs Ollama on the runner, pulls a small CPU model, and routes real inference through the gateway. The other exercises hosted providers using the `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` repository secrets — set whichever you want covered. Model IDs can be overridden per repository with `SMOKE_OPENAI_MODEL`, `SMOKE_ANTHROPIC_MODEL`, `SMOKE_GEMINI_MODEL`, and `OLLAMA_MODEL` Actions variables, so a provider retiring a model does not require a code change.
 

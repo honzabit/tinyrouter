@@ -1,6 +1,8 @@
 import type { ProviderConfig } from "../config.ts";
 import { GatewayError } from "../errors.ts";
 import type { ChatCompletionRequest, JsonObject } from "../types.ts";
+import { ANTHROPIC_EFFORTS } from "./anthropic.ts";
+import { GEMINI_THINKING_LEVELS } from "./gemini.ts";
 
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -69,5 +71,27 @@ export function assertSupportedRequirements(
     input.tool_choice !== "none"
   ) {
     throw unsupported(type, "parallel_tool_calls");
+  }
+
+  // Extra choices and token log probabilities change the response shape, and
+  // neither translation returns them. Gemini's candidateCount is not used:
+  // Gemini 3 and later reject it above 1, and the stream carries one candidate.
+  const n = input.n;
+  if (n !== undefined && n !== null && n !== 1) throw unsupported(type, "n");
+  const logprobs = input.logprobs;
+  if (logprobs !== undefined && logprobs !== null && logprobs !== false) {
+    throw unsupported(type, "logprobs");
+  }
+  if (input.top_logprobs !== undefined && input.top_logprobs !== null) {
+    throw unsupported(type, "top_logprobs");
+  }
+
+  // Only a level of the same name is translated; a nearby level would quietly
+  // change how much the model reasons. seed is a best-effort hint and is not
+  // checked: both native adapters drop it.
+  const effort = input.reasoning_effort;
+  if (effort !== undefined && effort !== null) {
+    const levels = type === "anthropic" ? ANTHROPIC_EFFORTS : GEMINI_THINKING_LEVELS;
+    if (typeof effort !== "string" || !levels.has(effort)) throw unsupported(type, "reasoning_effort");
   }
 }
