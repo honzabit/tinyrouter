@@ -79,6 +79,9 @@ providers:
 routes:
   fast:
     - openai/gpt-5-mini
+    # Claude 4.5 models reject the adaptive thinking that reasoning_effort
+    # becomes, and that 400 ends routing. If clients send reasoning_effort,
+    # use a model that accepts it, such as claude-sonnet-4-6.
     - anthropic/claude-haiku-4-5
 
   smart:

@@ -44,6 +44,9 @@ providers:
 routes:
   fast:
     - openai/gpt-5-mini
+    # Claude 4.5 models reject the adaptive thinking that reasoning_effort
+    # becomes, and that 400 ends routing. If clients send reasoning_effort,
+    # use a model that accepts it, such as claude-sonnet-4-6.
     - anthropic/claude-haiku-4-5
 
   private:
@@ -114,7 +117,7 @@ filters:
 
 The contract: filters run in configured order, once per request per provider, over content-bearing text only — string message content, the text of text parts, and tool-call arguments (both `tool_calls` and legacy `function_call`). Structural fields such as roles, names, ids, and image URLs are never scanned, and fields outside `messages` are never touched. Tool-call arguments are redacted inside their parsed JSON, so redaction cannot corrupt them; arguments that are not valid JSON are redacted as text.
 
-A filter with a `providers` list applies only when the attempt targets one of those providers, so a route like `[local/qwen3, anthropic/claude-haiku-4-5]` can send full content to your own hardware and redact only what leaves for the cloud; a filter without `providers` applies everywhere.
+A filter with a `providers` list applies only when the attempt targets one of those providers, so a route like `[local/qwen3, anthropic/claude-sonnet-4-6]` can send full content to your own hardware and redact only what leaves for the cloud; a filter without `providers` applies everywhere.
 
 A firing block means *that target* may not receive the content, so the target is skipped and routing continues — a block scoped to one provider never vetoes the others. The request fails with a 400 naming the rule only when no target can serve it, and a real failure from a target that was actually tried is reported instead of the block, so an outage is never disguised as a client error. Blocked targets appear in the attempt log with outcome `blocked`, and are never counted as upstream provider attempts.
 
