@@ -124,3 +124,5 @@ routes:
 Each provider keeps its own circuit breaker and metrics.
 
 The defaults keep existing behavior. On models that honor `temperature` and `top_p`, dropping them would change how every response is sampled, and TinyRouter does not make that change unless the operator asks for it. If you set `anthropic_version` to `2026-10-21` or later, also set `sampling_parameters: drop`. Otherwise, every request that sends `temperature` or `top_p` fails upstream.
+
+`forward` also meets `reasoning_effort` on older models. The adapter turns adaptive thinking on for `reasoning_effort`, and on API version `2023-06-01`, Claude Opus 4.6 and Sonnet 4.6 reject a non-default `temperature` while thinking is on and accept `top_p` only between 0.95 and 1. A request that sends `reasoning_effort` together with such a value to those models fails upstream unless `sampling_parameters: drop` is set.
