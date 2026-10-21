@@ -16,6 +16,10 @@ import {
 
 type AnthropicProviderConfig = Extract<ProviderConfig, { type: "anthropic" }>;
 
+// The reasoning_effort values that name an Anthropic effort level. Effort sets
+// the depth; adaptive thinking turns it on for models that default it off.
+export const ANTHROPIC_EFFORTS: ReadonlySet<string> = new Set(["low", "medium", "high", "xhigh", "max"]);
+
 interface AnthropicBlock extends JsonObject {
   type: string;
 }
@@ -269,6 +273,7 @@ function buildAnthropicBody(
       : typeof input.max_tokens === "number"
         ? input.max_tokens
         : defaultMaxTokens;
+  const effort = typeof input.reasoning_effort === "string" ? input.reasoning_effort : undefined;
 
   return {
     model,
@@ -283,6 +288,7 @@ function buildAnthropicBody(
         : {}),
     ...(tools === undefined ? {} : { tools }),
     ...(toolChoice === undefined ? {} : { tool_choice: toolChoice }),
+    ...(effort === undefined ? {} : { thinking: { type: "adaptive" }, output_config: { effort } }),
     stream: input.stream === true,
   };
 }

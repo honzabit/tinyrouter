@@ -2,7 +2,8 @@
 // End-to-end smoke test. Spawns a real gateway configured with every provider
 // whose credentials are present in the environment, then sends live traffic
 // through the OpenAI-compatible surface: a completion, a streamed completion,
-// and (for hosted providers) a forced tool call.
+// (for hosted providers) a forced tool call, and (for native adapters) a
+// completion with reasoning_effort.
 //
 //   OPENAI_API_KEY=sk-... bun run smoke
 //   SMOKE_LOCAL_BASE_URL=http://localhost:11434/v1 SMOKE_LOCAL_MODEL=qwen2.5:0.5b bun run smoke
@@ -26,6 +27,7 @@ interface SmokeTarget {
   maxTokens: number;
   checkTools: boolean;
   checkStreamUsage: boolean;
+  checkReasoning: boolean;
 }
 
 interface Failure {
@@ -63,10 +65,11 @@ function buildTargets(): SmokeTarget[] {
       maxTokens: 512,
       checkTools: true,
       checkStreamUsage: false,
+      checkReasoning: false,
     });
   }
   if (process.env.ANTHROPIC_API_KEY) {
-    const model = process.env.SMOKE_ANTHROPIC_MODEL ?? "claude-haiku-4-5";
+    const model = process.env.SMOKE_ANTHROPIC_MODEL ?? "claude-sonnet-4-6";
     targets.push({
       name: "anthropic",
       target: `anthropic/${model}`,
@@ -80,6 +83,7 @@ function buildTargets(): SmokeTarget[] {
       maxTokens: 256,
       checkTools: true,
       checkStreamUsage: true,
+      checkReasoning: true,
     });
   }
   if (process.env.GEMINI_API_KEY) {
@@ -97,6 +101,7 @@ function buildTargets(): SmokeTarget[] {
       maxTokens: 256,
       checkTools: true,
       checkStreamUsage: true,
+      checkReasoning: true,
     });
   }
   if (process.env.SMOKE_LOCAL_BASE_URL) {
@@ -118,6 +123,7 @@ function buildTargets(): SmokeTarget[] {
       maxTokens: 64,
       checkTools: false,
       checkStreamUsage: false,
+      checkReasoning: false,
     });
   }
   return targets;
@@ -154,13 +160,18 @@ async function failedResponse(response: Response, check: string): Promise<Error>
   return response.status === 429 ? new RateLimited(detail) : new Error(detail);
 }
 
-async function checkCompletion(target: SmokeTarget): Promise<void> {
+async function expectCompletion(
+  target: SmokeTarget,
+  check: string,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
   const response = await chat({
     model: target.target,
     messages: [{ role: "user", content: "Reply with exactly one word: pong" }],
     [target.maxTokensField]: target.maxTokens,
+    ...extra,
   });
-  if (response.status !== 200) throw await failedResponse(response, "completion");
+  if (response.status !== 200) throw await failedResponse(response, check);
   const provider = response.headers.get("x-tinyrouter-provider");
   if (provider !== target.name)
     throw new Error(`expected x-tinyrouter-provider '${target.name}', got '${provider}'`);
@@ -170,10 +181,23 @@ async function checkCompletion(target: SmokeTarget): Promise<void> {
   };
   const content = body.choices?.[0]?.message?.content;
   if (typeof content !== "string" || content.trim() === "") {
-    throw new Error(`completion content is empty: ${JSON.stringify(body).slice(0, 400)}`);
+    throw new Error(`${check} content is empty: ${JSON.stringify(body).slice(0, 400)}`);
   }
-  if ((body.usage?.total_tokens ?? 0) <= 0)
-    throw new Error("completion usage.total_tokens is missing or zero");
+  if ((body.usage?.total_tokens ?? 0) <= 0) throw new Error(`${check} usage.total_tokens is missing or zero`);
+}
+
+function checkCompletion(target: SmokeTarget): Promise<void> {
+  return expectCompletion(target, "completion");
+}
+
+// Native adapters turn reasoning_effort into the provider's own thinking
+// control, and only the provider can say whether the model accepts it.
+// Thinking counts against the output limit, so leave room for an answer.
+function checkReasoningEffort(target: SmokeTarget): Promise<void> {
+  return expectCompletion(target, "reasoning effort", {
+    reasoning_effort: "low",
+    [target.maxTokensField]: 2048,
+  });
 }
 
 async function checkStreaming(target: SmokeTarget): Promise<void> {
@@ -251,6 +275,9 @@ async function runTarget(target: SmokeTarget, outcome: Outcome): Promise<void> {
     ["completion", checkCompletion],
     ["streaming", checkStreaming],
     ...(target.checkTools ? [["tool call", checkToolCall] as [string, typeof checkToolCall]] : []),
+    ...(target.checkReasoning
+      ? [["reasoning effort", checkReasoningEffort] as [string, typeof checkReasoningEffort]]
+      : []),
   ];
   for (const [name, check] of checks) {
     outcome.total += 1;

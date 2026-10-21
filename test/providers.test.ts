@@ -228,6 +228,89 @@ describe("Anthropic translation details", () => {
     expect(upstreamBody?.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
   });
 
+  test.each(["low", "medium", "high", "xhigh", "max"])(
+    "maps reasoning_effort %s to adaptive thinking at that effort",
+    async (effort) => {
+      let upstreamBody: Record<string, unknown> | undefined;
+      const gateway = gatewayFor(ANTHROPIC_PROVIDER, "anthropic/claude-test", async (request) => {
+        upstreamBody = (await request.json()) as Record<string, unknown>;
+        return anthropicMessageResponse();
+      });
+
+      const response = await gateway.fetch(completionRequest({ reasoning_effort: effort }));
+      expect(response.status).toBe(200);
+      expect(upstreamBody?.thinking).toEqual({ type: "adaptive" });
+      expect(upstreamBody?.output_config).toEqual({ effort });
+      expect(upstreamBody).not.toHaveProperty("reasoning_effort");
+    },
+  );
+
+  test("sends no thinking configuration without reasoning_effort", async () => {
+    let upstreamBody: Record<string, unknown> | undefined;
+    const gateway = gatewayFor(ANTHROPIC_PROVIDER, "anthropic/claude-test", async (request) => {
+      upstreamBody = (await request.json()) as Record<string, unknown>;
+      return anthropicMessageResponse();
+    });
+
+    await gateway.fetch(completionRequest({}));
+    expect(upstreamBody).not.toHaveProperty("thinking");
+    expect(upstreamBody).not.toHaveProperty("output_config");
+  });
+
+  test("keeps thinking blocks out of the normalized message", async () => {
+    const gateway = gatewayFor(ANTHROPIC_PROVIDER, "anthropic/claude-test", async () =>
+      Response.json({
+        id: "msg_1",
+        type: "message",
+        model: "claude-test",
+        content: [
+          { type: "thinking", thinking: "private-thought-marker", signature: "sig" },
+          { type: "redacted_thinking", data: "opaque" },
+          { type: "text", text: "Sunny." },
+        ],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 9 },
+      }),
+    );
+
+    const response = await gateway.fetch(completionRequest({ reasoning_effort: "high" }));
+    const text = await response.text();
+    expect(text).not.toContain("private-thought-marker");
+    const body = JSON.parse(text) as CompletionBody;
+    expect(body.choices[0]?.message.content).toBe("Sunny.");
+    expect(body.usage.completion_tokens).toBe(9);
+  });
+
+  test("keeps thinking deltas out of the translated stream", async () => {
+    const gateway = gatewayFor(
+      ANTHROPIC_PROVIDER,
+      "anthropic/claude-test",
+      async () =>
+        new Response(
+          [
+            'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","model":"claude-test","usage":{"input_tokens":2}}}\n\n',
+            'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"private-thought-marker"}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"private-signature-marker"}}\n\n',
+            'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool_1","name":"weather"}}\n\n',
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+            'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}\n\n',
+            'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+          ].join(""),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
+
+    const response = await gateway.fetch(
+      completionRequest({ stream: true, reasoning_effort: "high", tools: [WEATHER_TOOL] }),
+    );
+    const stream = await response.text();
+    expect(stream).not.toContain("private-thought-marker");
+    expect(stream).not.toContain("private-signature-marker");
+    expect(stream).toContain('"tool_calls":[{"index":0,"id":"tool_1"');
+    expect(stream).toContain('"finish_reason":"tool_calls"');
+  });
+
   test("converts data: image URLs into base64 image blocks", async () => {
     let upstreamBody: Record<string, unknown> | undefined;
     const gateway = gatewayFor(ANTHROPIC_PROVIDER, "anthropic/claude-test", async (request) => {
@@ -304,6 +387,27 @@ describe("Anthropic translation details", () => {
 });
 
 describe("Gemini translation details", () => {
+  test.each(["minimal", "low", "medium", "high"])(
+    "maps reasoning_effort %s to the thinking level of the same name",
+    async (effort) => {
+      let upstreamBody: Record<string, unknown> | undefined;
+      const gateway = gatewayFor(GEMINI_PROVIDER, "gemini/gemini-test", async (request) => {
+        upstreamBody = (await request.json()) as Record<string, unknown>;
+        return Response.json({
+          candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+        });
+      });
+
+      const response = await gateway.fetch(completionRequest({ reasoning_effort: effort, max_tokens: 64 }));
+      expect(response.status).toBe(200);
+      expect(upstreamBody?.generationConfig).toEqual({
+        maxOutputTokens: 64,
+        thinkingConfig: { thinkingLevel: effort },
+      });
+      expect(upstreamBody).not.toHaveProperty("reasoning_effort");
+    },
+  );
+
   test("converts data: image URLs into inlineData parts", async () => {
     let upstreamBody: Record<string, unknown> | undefined;
     const gateway = gatewayFor(GEMINI_PROVIDER, "gemini/gemini-test", async (request) => {

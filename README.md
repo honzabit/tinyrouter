@@ -35,7 +35,7 @@ Use it when:
   routes:
     assistant:
       - local/qwen3
-      - anthropic/claude-haiku-4-5
+      - anthropic/claude-sonnet-4-6
   ```
 
 - **You need failover you can reason about.** The routing contract fits in a paragraph and never switches providers mid-stream. What triggers a retry is a configured status list, not a heuristic.

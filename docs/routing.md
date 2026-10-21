@@ -39,12 +39,28 @@ These checks describe the translations **implemented by TinyRouter**, not everyt
 | `response_format.json_schema.strict: true` | Passed through | Target skipped | Target skipped |
 | `tools[].function.strict: true` | Passed through | Target skipped | Target skipped |
 | `parallel_tool_calls: false` with tools enabled | Passed through | Translated to `disable_parallel_tool_use: true` | Target skipped |
+| `n` other than 1 | Passed through | Target skipped | Target skipped |
+| `logprobs: true` | Passed through | Target skipped | Target skipped |
+| `top_logprobs` set | Passed through | Target skipped | Target skipped |
+| `reasoning_effort: "low"`, `"medium"`, `"high"` | Passed through | Translated to `thinking: {type: "adaptive"}` and `output_config.effort` | Translated to `generationConfig.thinkingConfig.thinkingLevel` |
+| `reasoning_effort: "xhigh"`, `"max"` | Passed through | Translated to `thinking: {type: "adaptive"}` and `output_config.effort` | Target skipped |
+| `reasoning_effort: "minimal"` | Passed through | Target skipped | Translated to `generationConfig.thinkingConfig.thinkingLevel` |
+| `reasoning_effort: "none"` or any other value | Passed through | Target skipped | Target skipped |
+| `seed` (best-effort hint, not protected) | Passed through | Dropped | Dropped |
 
 Omitted/null response formats and `{type: "text"}` remain ordinary text requests. Omitted/null/false strict flags retain the existing non-strict behavior. With no tools, an empty tool list, or `tool_choice: "none"`, there are no calls to parallelize, so `parallel_tool_calls: false` does not disqualify Gemini. A true or omitted/null parallel setting likewise imposes no serial-call constraint.
 
-Unknown or malformed response-format variants, non-boolean strict flags, and non-boolean parallel settings are not silently discarded by native adapters; those targets are skipped. A Gemini `json_schema` request must contain an object at `response_format.json_schema.schema`. Passthrough adapters continue forwarding fields unchanged, leaving provider-specific validation and enforcement to the upstream.
+Unknown or malformed response-format variants, non-boolean strict flags, and non-boolean parallel settings are not silently discarded by native adapters; those targets are skipped. The same holds for an `n` that is not 1, a `logprobs` that is not a boolean, and a `reasoning_effort` that is not one of the listed strings. A Gemini `json_schema` request must contain an object at `response_format.json_schema.schema`. Passthrough adapters continue forwarding fields unchanged, leaving provider-specific validation and enforcement to the upstream.
 
-If no target can preserve a protected requirement, the gateway returns `400` with `error.code: "unsupported_parameter"` and an `error.param` such as `response_format` or `tools[0].function.strict`. Each skipped attempt records `outcome: "unsupported"`, `errorCode`, and `parameter`, without logging the prompt, schema, or parameter value. When different targets are excluded for different reasons, the last local exclusion supplies the final error; a real failure from a target actually contacted still takes precedence.
+`n` above 1 and log probabilities change the shape of the response, and neither native translation can return extra choices or token log probabilities. `n: 1`, `logprobs: false`, and omitted/null values are ordinary requests. TinyRouter deliberately does not translate `n` to Gemini's `candidateCount`: Gemini 3 and later models reject `candidateCount` above 1 with an upstream error that would end routing instead of falling back, and the streaming translation carries only one candidate.
+
+`reasoning_effort` is translated only to a provider level of the same name; a nearby level would silently change how much the model reasons, so the target is skipped instead. Anthropic receives `thinking: {type: "adaptive"}`, which turns thinking on for models that default it off, together with `output_config.effort`. Gemini receives `generationConfig.thinkingConfig.thinkingLevel`. Whether a given model offers a level is still the provider's decision, not a TinyRouter catalog. Earlier generations without these controls (Claude 4.5 and older models, Gemini 2.5 models), and models that lack a particular level, reject the request with an upstream `400`. That ends routing like any other upstream request error. Thinking output is not surfaced: Anthropic thinking blocks are removed from normalized responses and streams, and Gemini thought summaries are not requested. Chat Completions messages have no place for thinking blocks, so they are not sent back on later turns either.
+
+Anthropic counts thinking tokens toward `max_tokens`. Claude Sonnet 4.6 and Opus 4.6–4.8 do not think unless asked, so on those models a request with `reasoning_effort` now spends part of its output limit on thinking. A request without `max_tokens` or `max_completion_tokens` gets the provider's `default_max_tokens`, which is 4096 unless configured. At `high` effort and above, that can end with `finish_reason: "length"` and little or no text. Clients that send `reasoning_effort` should send a larger `max_tokens`, or operators should raise `default_max_tokens` on the Anthropic provider.
+
+`seed` is a best-effort determinism hint even where it is supported, so it is not a protected requirement: both native adapters drop it and the target is still used.
+
+If no target can preserve a protected requirement, the gateway returns `400` with `error.code: "unsupported_parameter"` and an `error.param` such as `response_format`, `n`, `reasoning_effort`, or `tools[0].function.strict`. Each skipped attempt records `outcome: "unsupported"`, `errorCode`, and `parameter`, without logging the prompt, schema, or parameter value. When different targets are excluded for different reasons, the last local exclusion supplies the final error; a real failure from a target actually contacted still takes precedence.
 
 This is a bounded compatibility contract, not complete API equivalence or response-schema validation. Gemini's existing non-strict schema translation is retained; it is not treated as implementing OpenAI's explicit strict contract. Other provider-specific options retain their existing behavior. A passthrough endpoint accepting a request is not a guarantee that its model supports every requested feature.
 
@@ -54,8 +70,8 @@ This is a bounded compatibility contract, not complete API equivalence or respon
 | --- | --- | --- |
 | `openai` | OpenAI Chat Completions passthrough | Passthrough |
 | `openai-compatible` | Configurable OpenAI-shaped endpoint | Passthrough |
-| `anthropic` | Translates messages, tools, and common generation options | Normalizes JSON and SSE |
-| `gemini` | Translates messages, tools, common options, and non-strict JSON response format | Normalizes JSON and SSE |
+| `anthropic` | Translates messages, tools, common generation options, and reasoning effort | Normalizes JSON and SSE |
+| `gemini` | Translates messages, tools, common options, reasoning effort, and non-strict JSON response format | Normalizes JSON and SSE |
 
 The generic OpenAI-compatible adapter passes unknown request fields through unchanged. Native adapters intentionally support a smaller common subset; provider-specific features that have no safe cross-provider representation are not silently invented. The protected requirements above are checked explicitly before translation.
 

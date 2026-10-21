@@ -15,6 +15,9 @@ import {
 
 type GeminiProviderConfig = Extract<ProviderConfig, { type: "gemini" }>;
 
+// The reasoning_effort values that name a Gemini thinking level.
+export const GEMINI_THINKING_LEVELS: ReadonlySet<string> = new Set(["minimal", "low", "medium", "high"]);
+
 interface GeminiContent extends JsonObject {
   role: "user" | "model";
   parts: JsonObject[];
@@ -211,6 +214,9 @@ function generationConfig(input: ChatCompletionRequest): JsonObject | undefined 
   else if (Array.isArray(input.stop)) config.stopSequences = input.stop;
   if (typeof input.presence_penalty === "number") config.presencePenalty = input.presence_penalty;
   if (typeof input.frequency_penalty === "number") config.frequencyPenalty = input.frequency_penalty;
+  if (typeof input.reasoning_effort === "string") {
+    config.thinkingConfig = { thinkingLevel: input.reasoning_effort };
+  }
 
   const format = input.response_format;
   if (format !== null && typeof format === "object") {

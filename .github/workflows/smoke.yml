@@ -16,10 +16,13 @@ permissions:
 # Smoke tests check plumbing, not model quality, so these are deliberately
 # small and widely available. Model IDs drift and differ by account: override
 # any of them with a repository variable (Settings -> Secrets and variables ->
-# Actions -> Variables) rather than editing this file.
+# Actions -> Variables) rather than editing this file. The Anthropic model must
+# accept both adaptive thinking (reasoning_effort) and forced tool use, which
+# rules out Claude 4.5 models as well as Opus 5.5, Sonnet 5.5, Fable 5.1 and
+# Mythos 5.1.
 env:
   SMOKE_OPENAI_MODEL: ${{ vars.SMOKE_OPENAI_MODEL || 'gpt-5-mini' }}
-  SMOKE_ANTHROPIC_MODEL: ${{ vars.SMOKE_ANTHROPIC_MODEL || 'claude-haiku-4-5' }}
+  SMOKE_ANTHROPIC_MODEL: ${{ vars.SMOKE_ANTHROPIC_MODEL || 'claude-sonnet-4-6' }}
   SMOKE_GEMINI_MODEL: ${{ vars.SMOKE_GEMINI_MODEL || 'gemini-flash-latest' }}
   OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL || 'qwen2.5:0.5b' }}
 
