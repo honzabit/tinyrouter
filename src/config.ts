@@ -50,6 +50,11 @@ const providerSchema = z.discriminatedUnion("type", [
     base_url: z.url().default("https://api.anthropic.com/v1"),
     anthropic_version: z.string().default("2023-06-01"),
     default_max_tokens: z.number().int().positive().default(4096),
+    // Current Claude models reject sampling parameters, and the newest reject
+    // forced tool use. Only the operator knows which models a provider serves,
+    // so the operator chooses; TinyRouter keeps no model catalog.
+    sampling_parameters: z.enum(["forward", "drop"]).default("forward"),
+    forced_tool_choice: z.enum(["forward", "skip"]).default("forward"),
   }),
   z.strictObject({
     type: z.literal("gemini"),

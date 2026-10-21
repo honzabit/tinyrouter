@@ -35,6 +35,16 @@ export function unsupportedContent(message: string): GatewayError {
   });
 }
 
+export function unsupportedParameter(message: string, param: string): GatewayError {
+  return new GatewayError({
+    message,
+    status: 400,
+    type: "invalid_request_error",
+    code: "unsupported_parameter",
+    param,
+  });
+}
+
 function findErrorMessage(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (value === null || typeof value !== "object") return undefined;

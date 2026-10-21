@@ -52,6 +52,28 @@ routes:
     ).toThrow("unknown provider 'missing'");
   });
 
+  test("forwards Anthropic sampling and forced tool choice unless told otherwise", () => {
+    const config = parseConfig(`
+providers:
+  anthropic:
+    type: anthropic
+    api_key: ant-secret
+`);
+    expect(config.providers.anthropic).toMatchObject({
+      sampling_parameters: "forward",
+      forced_tool_choice: "forward",
+    });
+    expect(() =>
+      parseConfig(`
+providers:
+  anthropic:
+    type: anthropic
+    api_key: ant-secret
+    sampling_parameters: skip
+`),
+    ).toThrow(ConfigError);
+  });
+
   test("redacts inbound and provider secrets", () => {
     const config = parseConfig(`
 server:

@@ -2,6 +2,18 @@
 
 Notable changes per release. Versions follow semantic versioning with the 0.x caveat that **minor bumps carry the breaking changes**; patches are fixes. Dates are UTC.
 
+## 0.9.0 — Unreleased
+
+### Added
+
+- Two `anthropic` provider options for models that reject what the adapter forwards. Without them, each rejection is an upstream `400`, which ends routing even when a later target could serve the request.
+  - `sampling_parameters: drop` leaves out `temperature` and `top_p`. Claude Opus 4.7 and later and the Claude 5 generation reject non-default values. On API version `2026-10-21`, every model rejects any value. Like `seed`, these are best-effort hints, so the target is still used.
+  - `forced_tool_choice: skip` skips the provider's targets for `tool_choice: "required"` or a named function. Claude Opus 5.5, Sonnet 5.5, Fable 5.1, and Mythos 5.1 reject these. A forced choice is a protected requirement and is never weakened to `auto`. Routing continues to a target that can honor it, or fails with `400 unsupported_parameter` and `error.param: "tool_choice"`.
+
+### Unchanged
+
+- Both options default to `forward`, the existing behavior, because models that honor these parameters still need them. TinyRouter still keeps no model catalog: the operator states which providers serve such models, and an account serving both kinds can be configured as two providers with the same key.
+
 ## 0.8.0 — 2026-09-27
 
 ### Breaking

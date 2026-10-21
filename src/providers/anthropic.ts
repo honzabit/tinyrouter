@@ -11,6 +11,7 @@ import {
   parseProviderError,
   responseHeaders,
   unsupportedContent,
+  unsupportedParameter,
 } from "./provider.ts";
 
 type AnthropicProviderConfig = Extract<ProviderConfig, { type: "anthropic" }>;
@@ -233,14 +234,35 @@ function convertToolChoice(choice: unknown): JsonObject | undefined {
 function buildAnthropicBody(
   input: ChatCompletionRequest,
   model: string,
-  defaultMaxTokens: number,
+  {
+    default_max_tokens: defaultMaxTokens,
+    sampling_parameters: sampling,
+    forced_tool_choice: forcedToolChoice,
+  }: AnthropicProviderConfig,
 ): JsonObject {
   const converted = convertMessages(input);
   const tools = convertTools(input.tools);
   let toolChoice = tools === undefined ? undefined : convertToolChoice(input.tool_choice);
+  // A forced call is a requirement, not a hint: answering in text instead would
+  // silently weaken it, so a provider that cannot force tool use is skipped.
+  if (forcedToolChoice === "skip" && (toolChoice?.type === "any" || toolChoice?.type === "tool")) {
+    throw unsupportedParameter(
+      "This Anthropic provider is configured not to force tool use (forced_tool_choice: skip).",
+      "tool_choice",
+    );
+  }
   if (tools !== undefined && input.parallel_tool_calls === false && toolChoice?.type !== "none") {
     toolChoice = { ...(toolChoice ?? { type: "auto" }), disable_parallel_tool_use: true };
   }
+  // Sampling parameters are hints, like seed: no single response shows whether
+  // they were honored, so dropping them changes no contract the client can check.
+  const samplingFields =
+    sampling === "drop"
+      ? {}
+      : {
+          ...(typeof input.temperature === "number" ? { temperature: input.temperature } : {}),
+          ...(typeof input.top_p === "number" ? { top_p: input.top_p } : {}),
+        };
   const maxTokens =
     typeof input.max_completion_tokens === "number"
       ? input.max_completion_tokens
@@ -253,8 +275,7 @@ function buildAnthropicBody(
     messages: converted.messages,
     ...(converted.system === undefined ? {} : { system: converted.system }),
     max_tokens: maxTokens,
-    ...(typeof input.temperature === "number" ? { temperature: input.temperature } : {}),
-    ...(typeof input.top_p === "number" ? { top_p: input.top_p } : {}),
+    ...samplingFields,
     ...(typeof input.stop === "string"
       ? { stop_sequences: [input.stop] }
       : Array.isArray(input.stop)
@@ -472,7 +493,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     return new Request(joinUrl(this.config.base_url, "messages"), {
       method: "POST",
       headers,
-      body: JSON.stringify(buildAnthropicBody(input, model, this.config.default_max_tokens)),
+      body: JSON.stringify(buildAnthropicBody(input, model, this.config)),
       signal,
     });
   }
