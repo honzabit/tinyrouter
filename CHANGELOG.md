@@ -2,6 +2,16 @@
 
 Notable changes per release. Versions follow semantic versioning with the 0.x caveat that **minor bumps carry the breaking changes**; patches are fixes. Dates are UTC.
 
+## Unreleased
+
+### Breaking
+
+- Native adapters no longer silently drop a tool choice they cannot translate. Anthropic and Gemini translate `auto`, `required`, `none`, and one named function. Anything else with tools enabled, such as OpenAI's `allowed_tools` (which can require a call or narrow which tools may be called), a `custom` choice, or a malformed one, now skips the target instead of quietly becoming `auto` with every tool callable. Routing continues to a target that can honor it, or returns `400 unsupported_parameter` with `error.param: "tool_choice"`. This routing-contract change belongs in a minor release.
+
+### Changed
+
+- The x64 executables (`linux-x64`, `linux-x64-musl`, `darwin-x64`) and the amd64 container image are built on Bun's baseline runtime, which does not need AVX2. Earlier builds stopped with "Illegal instruction" on CPUs and virtual machines without it. Archive names are unchanged.
+
 ## 0.9.1 — 2026-10-22
 
 ### Added

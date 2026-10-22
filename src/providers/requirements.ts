@@ -9,6 +9,19 @@ function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// The tool choices both native adapters translate: the three keywords and one
+// named function. Omitted or null is the default, auto.
+function isTranslatedToolChoice(choice: unknown): boolean {
+  if (choice === undefined || choice === null) return true;
+  if (choice === "auto" || choice === "required" || choice === "none") return true;
+  return (
+    isObject(choice) &&
+    choice.type === "function" &&
+    isObject(choice.function) &&
+    typeof choice.function.name === "string"
+  );
+}
+
 function unsupported(type: ProviderConfig["type"], param: string): GatewayError {
   return unsupportedParameter(`The '${type}' adapter cannot preserve '${param}' for this request.`, param);
 }
@@ -66,6 +79,14 @@ export function assertSupportedRequirements(
     input.tool_choice !== "none"
   ) {
     throw unsupported(type, "parallel_tool_calls");
+  }
+
+  // Any other tool choice, such as allowed_tools (which can require a call or
+  // narrow which tools may be called) or a malformed one, translates to nothing
+  // and leaves the model free to call any tool or none. With no tools there is
+  // nothing to choose between, so nothing to weaken.
+  if ((input.tools?.length ?? 0) > 0 && !isTranslatedToolChoice(input.tool_choice)) {
+    throw unsupported(type, "tool_choice");
   }
 
   // Extra choices and token log probabilities change the response shape, and

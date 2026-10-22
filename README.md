@@ -73,6 +73,8 @@ On macOS, extract with `tar` as above rather than double-clicking the archive: F
 
 On Alpine and other musl distributions, where the glibc-linked executables cannot start, use `linux-x64-musl` or `linux-arm64-musl` instead; the install script picks them for you. They are the one case where something else needs installing, the C++ runtime: `apk add libstdc++`. Releases up to 0.9.0 have no musl build, so use the container image for those.
 
+The x64 executables and the amd64 container image use Bun's baseline runtime, which does not need AVX2, so they also start on older or low-power CPUs and on virtual machines that do not expose it. Releases up to 0.9.1 use the default runtime and stop with "Illegal instruction" there.
+
 ### Container
 
 Every release also publishes a multi-architecture image (amd64 and arm64) to the GitHub Container Registry:
