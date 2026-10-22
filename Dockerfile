@@ -5,8 +5,10 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src ./src
+# Baseline on amd64, as in the release archives: the default x64 runtime needs
+# AVX2 and cannot start on CPUs or virtual machines without it.
 RUN case "$TARGETARCH" in \
-      amd64) BUN_TARGET=bun-linux-x64-musl ;; \
+      amd64) BUN_TARGET=bun-linux-x64-musl-baseline ;; \
       arm64) BUN_TARGET=bun-linux-arm64-musl ;; \
       *) echo "Unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
     esac \

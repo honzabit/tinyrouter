@@ -39,6 +39,7 @@ These checks describe the translations **implemented by TinyRouter**, not everyt
 | `response_format.json_schema.strict: true` | Passed through | Target skipped | Target skipped |
 | `tools[].function.strict: true` | Passed through | Target skipped | Target skipped |
 | `parallel_tool_calls: false` with tools enabled | Passed through | Translated to `disable_parallel_tool_use: true` | Target skipped |
+| `tool_choice` other than `auto`, `required`, `none`, or one named function (for example `allowed_tools`), with tools enabled | Passed through | Target skipped | Target skipped |
 | `n` other than 1 | Passed through | Target skipped | Target skipped |
 | `logprobs: true` | Passed through | Target skipped | Target skipped |
 | `top_logprobs` set | Passed through | Target skipped | Target skipped |
@@ -50,7 +51,7 @@ These checks describe the translations **implemented by TinyRouter**, not everyt
 
 Omitted/null response formats and `{type: "text"}` remain ordinary text requests. Omitted/null/false strict flags retain the existing non-strict behavior. With no tools, an empty tool list, or `tool_choice: "none"`, there are no calls to parallelize, so `parallel_tool_calls: false` does not disqualify Gemini. A true or omitted/null parallel setting likewise imposes no serial-call constraint.
 
-Unknown or malformed response-format variants, non-boolean strict flags, and non-boolean parallel settings are not silently discarded by native adapters; those targets are skipped. The same holds for an `n` that is not 1, a `logprobs` that is not a boolean, and a `reasoning_effort` that is not one of the listed strings. A Gemini `json_schema` request must contain an object at `response_format.json_schema.schema`. Passthrough adapters continue forwarding fields unchanged, leaving provider-specific validation and enforcement to the upstream.
+Unknown or malformed response-format variants, non-boolean strict flags, and non-boolean parallel settings are not silently discarded by native adapters; those targets are skipped. The same holds for an `n` that is not 1, a `logprobs` that is not a boolean, a `reasoning_effort` that is not one of the listed strings, and any tool choice the adapters do not translate. An `allowed_tools` choice can require a call or narrow which tools may be called, and dropping it would leave the model free to call any tool or none. A Gemini `json_schema` request must contain an object at `response_format.json_schema.schema`. Passthrough adapters continue forwarding fields unchanged, leaving provider-specific validation and enforcement to the upstream.
 
 `n` above 1 and log probabilities change the shape of the response, and neither native translation can return extra choices or token log probabilities. `n: 1`, `logprobs: false`, and omitted/null values are ordinary requests. TinyRouter deliberately does not translate `n` to Gemini's `candidateCount`: Gemini 3 and later models reject `candidateCount` above 1 with an upstream error that would end routing instead of falling back, and the streaming translation carries only one candidate.
 

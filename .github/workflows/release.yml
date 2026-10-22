@@ -140,8 +140,17 @@ jobs:
           # The -musl builds are for Alpine and other musl distributions, where
           # the glibc builds cannot start. Like the container image, they need
           # libstdc++ installed to run.
+          # The x64 builds use Bun's baseline runtime. The default one needs AVX2
+          # and dies with "Illegal instruction" on CPUs and virtual machines
+          # without it, which includes much of the low-power hardware people
+          # self-host on. Archive names stay the same, so download URLs and the
+          # install script do not change.
           for target in linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64; do
-            bun build src/main.ts --compile --target="bun-$target" \
+            case "$target" in
+              *-x64*) runtime="bun-$target-baseline" ;;
+              *) runtime="bun-$target" ;;
+            esac
+            bun build src/main.ts --compile --target="$runtime" \
               --outfile build/tinyrouter
             chmod +x build/tinyrouter
             tar -czf "dist/tinyrouter-$target.tar.gz" -C build tinyrouter tinyrouter.example.yaml

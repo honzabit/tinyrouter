@@ -144,6 +144,42 @@ const unsupportedCases: Array<{ name: string; targets: string; extra: JsonObject
     param: "response_format.json_schema.schema",
   },
   {
+    name: "a required call among allowed tools",
+    targets: "anthropic/model, gemini/model",
+    extra: {
+      tools: [tool],
+      tool_choice: { type: "allowed_tools", allowed_tools: { mode: "required", tools: [tool] } },
+    },
+    param: "tool_choice",
+  },
+  {
+    name: "a narrowed set of allowed tools",
+    targets: "anthropic/model, gemini/model",
+    extra: {
+      tools: [tool],
+      tool_choice: { type: "allowed_tools", allowed_tools: { mode: "auto", tools: [tool] } },
+    },
+    param: "tool_choice",
+  },
+  {
+    name: "a custom tool choice",
+    targets: "anthropic/model, gemini/model",
+    extra: { tools: [tool], tool_choice: { type: "custom", custom: { name: "answer" } } },
+    param: "tool_choice",
+  },
+  {
+    name: "a named function without its name",
+    targets: "anthropic/model, gemini/model",
+    extra: { tools: [tool], tool_choice: { type: "function", function: {} } },
+    param: "tool_choice",
+  },
+  {
+    name: "an unknown tool choice keyword",
+    targets: "anthropic/model, gemini/model",
+    extra: { tools: [tool], tool_choice: "private-choice-marker" },
+    param: "tool_choice",
+  },
+  {
     name: "malformed parallel setting",
     targets: "anthropic/model, gemini/model",
     extra: { parallel_tool_calls: "false" },
@@ -237,6 +273,7 @@ describe("request requirements at the routing boundary", () => {
     expect(JSON.stringify(logs)).not.toContain("private-prompt-marker");
     expect(JSON.stringify(logs)).not.toContain("private-format-marker");
     expect(JSON.stringify(logs)).not.toContain("private-effort-marker");
+    expect(JSON.stringify(logs)).not.toContain("private-choice-marker");
   });
 
   test("strict constraints survive a real fallback without calling lossy adapters", async () => {
@@ -365,6 +402,13 @@ describe("request requirements at the routing boundary", () => {
       { logprobs: false },
       { logprobs: null, top_logprobs: null },
       { reasoning_effort: null },
+      { tools: [tool], tool_choice: null },
+      { tools: [tool], tool_choice: "auto" },
+      { tools: [tool], tool_choice: "required" },
+      { tools: [tool], tool_choice: "none" },
+      { tools: [tool], tool_choice: { type: "function", function: { name: "answer" } } },
+      // With no tools there is nothing to choose between, so nothing is weakened.
+      { tool_choice: { type: "allowed_tools", allowed_tools: { mode: "required", tools: [tool] } } },
     ]) {
       const { gateway, calls } = setup(`${provider}/model`);
       const response = await gateway.fetch(request(extra));
@@ -416,11 +460,42 @@ describe("request requirements at the routing boundary", () => {
       top_logprobs: 2,
       reasoning_effort: "none",
       seed: 7,
+      tool_choice: { type: "allowed_tools", allowed_tools: { mode: "required", tools: [strictTool] } },
     };
     const response = await gateway.fetch(request(extra));
     expect(response.status).toBe(200);
     await response.text();
     expect(calls[0]?.body).toMatchObject(extra);
+  });
+
+  test("an allowed_tools choice survives a real fallback without calling lossy adapters", async () => {
+    const { gateway, calls, logs } = setup(
+      "first/model, anthropic/model, gemini/model, compatible/model",
+      (call) =>
+        call.host === "first.test"
+          ? Response.json({ error: { message: "busy" } }, { status: 503 })
+          : success(call.host),
+    );
+    const extra = {
+      tools: [tool],
+      tool_choice: { type: "allowed_tools", allowed_tools: { mode: "required", tools: [tool] } },
+    };
+    const response = await gateway.fetch(request(extra));
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(response.headers.get("x-tinyrouter-provider")).toBe("compatible");
+    expect(calls.map((call) => call.host)).toEqual(["first.test", "compatible.test"]);
+    for (const call of calls) expect(call.body).toMatchObject(extra);
+    expect(logs.find((record) => record.event === "request_completed")?.attempts).toEqual([
+      expect.objectContaining({ outcome: "fallback", target: "first/model" }),
+      expect.objectContaining({
+        outcome: "unsupported",
+        target: "anthropic/model",
+        parameter: "tool_choice",
+      }),
+      expect.objectContaining({ outcome: "unsupported", target: "gemini/model", parameter: "tool_choice" }),
+      expect.objectContaining({ outcome: "success", target: "compatible/model" }),
+    ]);
   });
 
   test.each(["first/model, anthropic/model", "anthropic/model, first/model"])(
