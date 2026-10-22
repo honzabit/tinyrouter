@@ -29,7 +29,7 @@ env:
 jobs:
   local-model:
     name: Local model via Ollama (no secrets)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -59,7 +59,7 @@ jobs:
 
   providers:
     name: Hosted providers (repository secrets)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
         with:
