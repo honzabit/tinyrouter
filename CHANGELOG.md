@@ -2,7 +2,7 @@
 
 Notable changes per release. Versions follow semantic versioning with the 0.x caveat that **minor bumps carry the breaking changes**; patches are fixes. Dates are UTC.
 
-## Unreleased
+## 0.9.1 — 2026-10-22
 
 ### Added
 
