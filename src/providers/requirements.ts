@@ -1,21 +1,16 @@
 import type { ProviderConfig } from "../config.ts";
-import { GatewayError } from "../errors.ts";
+import type { GatewayError } from "../errors.ts";
 import type { ChatCompletionRequest, JsonObject } from "../types.ts";
 import { ANTHROPIC_EFFORTS } from "./anthropic.ts";
 import { GEMINI_THINKING_LEVELS } from "./gemini.ts";
+import { unsupportedParameter } from "./provider.ts";
 
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function unsupported(type: ProviderConfig["type"], param: string): GatewayError {
-  return new GatewayError({
-    message: `The '${type}' adapter cannot preserve '${param}' for this request.`,
-    status: 400,
-    type: "invalid_request_error",
-    code: "unsupported_parameter",
-    param,
-  });
+  return unsupportedParameter(`The '${type}' adapter cannot preserve '${param}' for this request.`, param);
 }
 
 // This describes the translations TinyRouter implements, not a model catalog

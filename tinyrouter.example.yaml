@@ -67,6 +67,13 @@ providers:
     type: anthropic
     api_key: ${ANTHROPIC_API_KEY}
     timeout_ms: 60000
+    # Claude Opus 4.7 and later reject a non-default temperature or top_p, and
+    # the newest models also reject forced tool use, with an upstream 400 that
+    # ends routing. If this provider's targets are such models, drop the one and
+    # skip targets for the other. See "Anthropic provider options" in
+    # docs/routing.md.
+    # sampling_parameters: drop
+    # forced_tool_choice: skip
 
   gemini:
     type: gemini

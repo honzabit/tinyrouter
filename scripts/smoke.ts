@@ -2,8 +2,9 @@
 // End-to-end smoke test. Spawns a real gateway configured with every provider
 // whose credentials are present in the environment, then sends live traffic
 // through the OpenAI-compatible surface: a completion, a streamed completion,
-// (for hosted providers) a forced tool call, and (for native adapters) a
-// completion with reasoning_effort.
+// (for hosted providers) a forced tool call, (for native adapters) a
+// completion with reasoning_effort, and (for Anthropic) reasoning_effort
+// together with temperature.
 //
 //   OPENAI_API_KEY=sk-... bun run smoke
 //   SMOKE_LOCAL_BASE_URL=http://localhost:11434/v1 SMOKE_LOCAL_MODEL=qwen2.5:0.5b bun run smoke
@@ -28,6 +29,7 @@ interface SmokeTarget {
   checkTools: boolean;
   checkStreamUsage: boolean;
   checkReasoning: boolean;
+  checkReasoningWithSampling: boolean;
 }
 
 interface Failure {
@@ -66,6 +68,7 @@ function buildTargets(): SmokeTarget[] {
       checkTools: true,
       checkStreamUsage: false,
       checkReasoning: false,
+      checkReasoningWithSampling: false,
     });
   }
   if (process.env.ANTHROPIC_API_KEY) {
@@ -84,6 +87,7 @@ function buildTargets(): SmokeTarget[] {
       checkTools: true,
       checkStreamUsage: true,
       checkReasoning: true,
+      checkReasoningWithSampling: true,
     });
   }
   if (process.env.GEMINI_API_KEY) {
@@ -102,6 +106,7 @@ function buildTargets(): SmokeTarget[] {
       checkTools: true,
       checkStreamUsage: true,
       checkReasoning: true,
+      checkReasoningWithSampling: false,
     });
   }
   if (process.env.SMOKE_LOCAL_BASE_URL) {
@@ -124,6 +129,7 @@ function buildTargets(): SmokeTarget[] {
       checkTools: false,
       checkStreamUsage: false,
       checkReasoning: false,
+      checkReasoningWithSampling: false,
     });
   }
   return targets;
@@ -196,6 +202,17 @@ function checkCompletion(target: SmokeTarget): Promise<void> {
 function checkReasoningEffort(target: SmokeTarget): Promise<void> {
   return expectCompletion(target, "reasoning effort", {
     reasoning_effort: "low",
+    [target.maxTokensField]: 2048,
+  });
+}
+
+// Adaptive thinking and a custom temperature cannot go together on any Claude
+// model that thinks adaptively, so the adapter leaves the sampling hint out.
+// Without that, this is an upstream 400 on claude-sonnet-4-6.
+function checkReasoningWithSampling(target: SmokeTarget): Promise<void> {
+  return expectCompletion(target, "reasoning effort with temperature", {
+    reasoning_effort: "low",
+    temperature: 0.7,
     [target.maxTokensField]: 2048,
   });
 }
@@ -277,6 +294,14 @@ async function runTarget(target: SmokeTarget, outcome: Outcome): Promise<void> {
     ...(target.checkTools ? [["tool call", checkToolCall] as [string, typeof checkToolCall]] : []),
     ...(target.checkReasoning
       ? [["reasoning effort", checkReasoningEffort] as [string, typeof checkReasoningEffort]]
+      : []),
+    ...(target.checkReasoningWithSampling
+      ? [
+          ["reasoning effort with temperature", checkReasoningWithSampling] as [
+            string,
+            typeof checkReasoningWithSampling,
+          ],
+        ]
       : []),
   ];
   for (const [name, check] of checks) {

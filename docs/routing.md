@@ -76,3 +76,53 @@ This is a bounded compatibility contract, not complete API equivalence or respon
 The generic OpenAI-compatible adapter passes unknown request fields through unchanged. Native adapters intentionally support a smaller common subset; provider-specific features that have no safe cross-provider representation are not silently invented. The protected requirements above are checked explicitly before translation.
 
 Images are translated for both native adapters: Anthropic accepts http(s) URLs and base64 `data:` URIs, Gemini accepts base64 `data:` URIs. Content parts that have no representation for the selected provider cause that target to be skipped rather than silently dropped, so clients never talk to a silently blind model.
+
+## Anthropic provider options
+
+Some Claude models reject two things the Anthropic adapter forwards by default. Each rejection is an upstream `400`, which ends routing even when a later target could have served the request. According to [Anthropic's documentation](https://platform.claude.com/docs/en/build-with-claude/thinking#limits-and-feature-compatibility) as of October 2026:
+
+- **Sampling parameters.** Claude Opus 4.7 and 4.8, every Claude 5-generation model, and Claude Mythos Preview reject a non-default `temperature` or `top_p` on every request, whether or not thinking is on. They also reject the two sent together, even at their defaults. Their `top_p` default is `0.99`, so `top_p: 1` is rejected as well. From API version `2026-10-21` (`anthropic_version`), every model rejects both parameters at any value.
+- **Forced tool use.** Claude Opus 5.5, Sonnet 5.5, Fable 5.1, and Mythos 5.1 reject `tool_choice: "required"` and a named function, which the adapter translates to Anthropic's `any` and `tool` choices.
+
+TinyRouter keeps no model catalog, so it cannot tell which models a target uses. The operator can, and declares it with two options on an `anthropic` provider:
+
+```yaml
+providers:
+  anthropic:
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+    sampling_parameters: drop # default: forward
+    forced_tool_choice: skip # default: forward
+```
+
+| Option | `forward` (default) | Other value |
+| --- | --- | --- |
+| `sampling_parameters` | `temperature` and `top_p` are sent as given, except alongside `reasoning_effort` (below) | `drop`: both are left out, and the model samples at its defaults |
+| `forced_tool_choice` | `"required"` and a named function become Anthropic's `any` and `tool` choices | `skip`: a request that forces a tool call skips this provider's targets |
+
+The two options do different things because the parameters mean different things. Sampling parameters are hints, like `seed`. No single response can show whether they were honored, so leaving them out breaks nothing a client can check. A model that accepts only its defaults could not honor another value anyway, and dropping the parameters lets it answer instead of refusing. A forced tool call is a protected requirement. A client that forces one depends on getting a tool call back, and the same request with `auto` may get text instead. So it is never weakened to `auto`. Instead, the target is skipped before any upstream request, like the other protected requirements above, and routing continues. If no target can serve the request, it fails with `400 unsupported_parameter` and `error.param: "tool_choice"`, and each skip is logged with outcome `unsupported` and parameter `tool_choice`. Tool choices that force no call (`auto`, `none`, or omitted) are unaffected.
+
+Both options apply to every target of the provider they are set on. If one Anthropic account serves models on both sides of either line, configure it as two providers with the same key. For example, Claude Sonnet 4.6 honors `temperature` and Claude Sonnet 5.5 rejects it:
+
+```yaml
+providers:
+  anthropic:
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+  anthropic-current:
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+    sampling_parameters: drop
+    forced_tool_choice: skip
+
+routes:
+  smart:
+    - anthropic-current/claude-sonnet-5-5
+    - anthropic/claude-sonnet-4-6
+```
+
+Each provider keeps its own circuit breaker and metrics.
+
+The defaults keep existing behavior. On models that honor `temperature` and `top_p`, dropping them would change how every response is sampled, and TinyRouter does not make that change unless the operator asks for it. If you set `anthropic_version` to `2026-10-21` or later, also set `sampling_parameters: drop`. Otherwise, every request that sends `temperature` or `top_p` fails upstream.
+
+Whatever `sampling_parameters` says, a request with `reasoning_effort` never carries `temperature` or `top_p` upstream. The adapter turns adaptive thinking on for `reasoning_effort`, and every Claude model that accepts adaptive thinking rejects a custom `temperature` while thinking is on. Claude Opus 4.7 and later reject it on every request. On API version `2023-06-01`, Claude Opus 4.6 and Sonnet 4.6 reject it whenever thinking is on, and accept `top_p` only between 0.95 and 1. Forwarding the hint would turn a request the model can serve into an upstream `400`, at the cost of the effort level the client actually asked for. So the hint gives way, and no model catalog is needed to decide it. Requests without `reasoning_effort` follow `forward` or `drop` as described above.

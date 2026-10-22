@@ -16,7 +16,7 @@ interface CompletionBody {
 }
 
 interface ErrorBody {
-  error: { message: string; type: string; code?: string };
+  error: { message: string; type: string; code?: string; param?: string };
 }
 
 function gatewayFor(providerYaml: string, target: string, fetchFn: Fetch) {
@@ -457,4 +457,165 @@ describe("Gemini translation details", () => {
     expect(response.status).toBe(400);
     expect(body.error.code).toBe("unsupported_content");
   });
+});
+
+const ANTHROPIC_CURRENT_PROVIDER = `${ANTHROPIC_PROVIDER}
+    sampling_parameters: drop
+    forced_tool_choice: skip`;
+
+const COMPATIBLE_PROVIDER = `  compatible:
+    type: openai-compatible
+    base_url: https://compatible.test/v1`;
+
+function compatibleResponse(): Response {
+  return Response.json({
+    id: "chatcmpl-1",
+    object: "chat.completion",
+    created: 1,
+    model: "model",
+    choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+  });
+}
+
+describe("Anthropic provider options", () => {
+  test("forwards temperature and top_p by default without reasoning_effort", async () => {
+    let upstreamBody: Record<string, unknown> | undefined;
+    const gateway = gatewayFor(ANTHROPIC_PROVIDER, "anthropic/claude-test", async (request) => {
+      upstreamBody = (await request.json()) as Record<string, unknown>;
+      return anthropicMessageResponse();
+    });
+
+    await gateway.fetch(completionRequest({ temperature: 0.7, top_p: 0.9 }));
+    expect(upstreamBody?.temperature).toBe(0.7);
+    expect(upstreamBody?.top_p).toBe(0.9);
+    expect(upstreamBody).not.toHaveProperty("thinking");
+  });
+
+  test.each(["forward", "drop"])(
+    "leaves out temperature and top_p whenever reasoning_effort turns thinking on: %s",
+    async (mode) => {
+      let upstreamBody: Record<string, unknown> | undefined;
+      const gateway = gatewayFor(
+        `${ANTHROPIC_PROVIDER}\n    sampling_parameters: ${mode}`,
+        "anthropic/claude-test",
+        async (request) => {
+          upstreamBody = (await request.json()) as Record<string, unknown>;
+          return anthropicMessageResponse();
+        },
+      );
+
+      const response = await gateway.fetch(
+        completionRequest({ reasoning_effort: "low", temperature: 0.7, top_p: 0.9 }),
+      );
+      expect(response.status).toBe(200);
+      expect(upstreamBody?.thinking).toEqual({ type: "adaptive" });
+      expect(upstreamBody?.output_config).toEqual({ effort: "low" });
+      expect(upstreamBody).not.toHaveProperty("temperature");
+      expect(upstreamBody).not.toHaveProperty("top_p");
+    },
+  );
+
+  test("drops temperature and top_p with sampling_parameters: drop", async () => {
+    let upstreamBody: Record<string, unknown> | undefined;
+    const gateway = gatewayFor(ANTHROPIC_CURRENT_PROVIDER, "anthropic/claude-test", async (request) => {
+      upstreamBody = (await request.json()) as Record<string, unknown>;
+      return anthropicMessageResponse();
+    });
+
+    const response = await gateway.fetch(
+      completionRequest({ temperature: 0.7, top_p: 0.9, max_tokens: 64, stop: "END" }),
+    );
+    expect(response.status).toBe(200);
+    expect(upstreamBody).not.toHaveProperty("temperature");
+    expect(upstreamBody).not.toHaveProperty("top_p");
+    expect(upstreamBody?.max_tokens).toBe(64);
+    expect(upstreamBody?.stop_sequences).toEqual(["END"]);
+  });
+
+  const forcedChoices: Array<[string, unknown, Record<string, unknown>]> = [
+    ["required", "required", { type: "any" }],
+    [
+      "a named function",
+      { type: "function", function: { name: "weather" } },
+      { type: "tool", name: "weather" },
+    ],
+  ];
+
+  test.each(forcedChoices)(
+    "forwards a forced tool choice by default: %s",
+    async (_name, choice, expected) => {
+      let upstreamBody: Record<string, unknown> | undefined;
+      const gateway = gatewayFor(ANTHROPIC_PROVIDER, "anthropic/claude-test", async (request) => {
+        upstreamBody = (await request.json()) as Record<string, unknown>;
+        return anthropicMessageResponse();
+      });
+
+      await gateway.fetch(completionRequest({ tools: [WEATHER_TOOL], tool_choice: choice }));
+      expect(upstreamBody?.tool_choice).toEqual(expected);
+    },
+  );
+
+  test.each(forcedChoices)(
+    "skips the target for a forced tool choice with forced_tool_choice: skip: %s",
+    async (_name, choice) => {
+      let upstreamCalls = 0;
+      const gateway = gatewayFor(ANTHROPIC_CURRENT_PROVIDER, "anthropic/claude-test", async () => {
+        upstreamCalls += 1;
+        return anthropicMessageResponse();
+      });
+
+      const response = await gateway.fetch(completionRequest({ tools: [WEATHER_TOOL], tool_choice: choice }));
+      const body = (await response.json()) as ErrorBody;
+      expect(response.status).toBe(400);
+      expect(body.error.code).toBe("unsupported_parameter");
+      expect(body.error.param).toBe("tool_choice");
+      expect(upstreamCalls).toBe(0);
+    },
+  );
+
+  test("falls back past a provider that cannot force tool use, keeping the request intact", async () => {
+    const calls: Array<{ host: string; body: Record<string, unknown> }> = [];
+    const gateway = gatewayFor(
+      `${ANTHROPIC_CURRENT_PROVIDER}\n${COMPATIBLE_PROVIDER}`,
+      "anthropic/claude-test, compatible/model",
+      async (request) => {
+        calls.push({
+          host: new URL(request.url).host,
+          body: (await request.json()) as Record<string, unknown>,
+        });
+        return compatibleResponse();
+      },
+    );
+
+    const response = await gateway.fetch(
+      completionRequest({ tools: [WEATHER_TOOL], tool_choice: "required", temperature: 0.2 }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-tinyrouter-provider")).toBe("compatible");
+    expect(calls.map((call) => call.host)).toEqual(["compatible.test"]);
+    expect(calls[0]?.body).toMatchObject({ tool_choice: "required", temperature: 0.2 });
+  });
+
+  test.each([
+    ["auto", { tool_choice: "auto" }, { type: "auto" }],
+    ["none", { tool_choice: "none" }, { type: "none" }],
+    [
+      "omitted, with serial calls",
+      { parallel_tool_calls: false },
+      { type: "auto", disable_parallel_tool_use: true },
+    ],
+  ])(
+    "still serves a tool choice that forces no call with forced_tool_choice: skip: %s",
+    async (_name, extra, expected) => {
+      let upstreamBody: Record<string, unknown> | undefined;
+      const gateway = gatewayFor(ANTHROPIC_CURRENT_PROVIDER, "anthropic/claude-test", async (request) => {
+        upstreamBody = (await request.json()) as Record<string, unknown>;
+        return anthropicMessageResponse();
+      });
+
+      const response = await gateway.fetch(completionRequest({ tools: [WEATHER_TOOL], ...extra }));
+      expect(response.status).toBe(200);
+      expect(upstreamBody?.tool_choice).toEqual(expected);
+    },
+  );
 });

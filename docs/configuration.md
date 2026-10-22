@@ -70,7 +70,7 @@ This is authentication, not accounts. There are no per-caller budgets, quotas, o
 
 Environment placeholders use `${NAME}`. `${NAME:-fallback}` is also supported. Configuration loading fails if a required variable is absent.
 
-The native `openai`, `anthropic`, and `gemini` provider types require `api_key`. The `openai-compatible` type does not, so it can route to local servers. Every provider accepts optional static `headers`, `base_url`, and `timeout_ms` values.
+The native `openai`, `anthropic`, and `gemini` provider types require `api_key`. The `openai-compatible` type does not, so it can route to local servers. Every provider accepts optional static `headers`, `base_url`, and `timeout_ms` values. An `anthropic` provider also accepts `sampling_parameters: drop` and `forced_tool_choice: skip`, for models that reject sampling parameters or forced tool use. See [Anthropic provider options](routing.md#anthropic-provider-options).
 
 `idle_timeout_seconds` defaults to `0`, disabling Bun's connection-idle timer so a model may think or pause for more than ten seconds without losing an SSE stream. Set it to `1`–`255` only if you intentionally want a global idle limit.
 
