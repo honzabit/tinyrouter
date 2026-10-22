@@ -137,7 +137,10 @@ jobs:
           # Named .example. rather than tinyrouter.yaml so extracting into a
           # directory that already has a real config cannot overwrite it.
           cp tinyrouter.example.yaml build/
-          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
+          # The -musl builds are for Alpine and other musl distributions, where
+          # the glibc builds cannot start. Like the container image, they need
+          # libstdc++ installed to run.
+          for target in linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64; do
             bun build src/main.ts --compile --target="bun-$target" \
               --outfile build/tinyrouter
             chmod +x build/tinyrouter
@@ -160,8 +163,18 @@ jobs:
             echo "Executable reports $actual, expected ${expected#v}." >&2
             exit 1
           fi
+          # The musl build cannot start on this glibc runner, so start it where
+          # it is meant to run: Alpine, with the C++ runtime it links against.
+          mkdir build/musl
+          tar -xzf dist/tinyrouter-linux-x64-musl.tar.gz -C build/musl
+          actual=$(docker run --rm -v "$PWD/build/musl:/opt/tinyrouter:ro" alpine:3.22 \
+            sh -c 'apk add --no-cache -q libstdc++ && /opt/tinyrouter/tinyrouter --version')
+          if [ "v$actual" != "$expected" ]; then
+            echo "The musl executable reports $actual, expected ${expected#v}." >&2
+            exit 1
+          fi
           expected="tinyrouter tinyrouter.example.yaml"
-          for target in linux-arm64 darwin-x64 darwin-arm64; do
+          for target in linux-arm64 linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64; do
             contents=$(tar -tzf "dist/tinyrouter-$target.tar.gz" | sort | tr '\n' ' ')
             if [ "${contents% }" != "$expected" ]; then
               echo "tinyrouter-$target.tar.gz contains '$contents', expected '$expected'." >&2
