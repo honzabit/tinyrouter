@@ -27,7 +27,7 @@ TinyRouter occupies a deliberate niche: deterministic model fallback behind one 
 
 Use it when:
 
-- **You want to audit the thing that holds your keys.** A gateway sits between your provider credentials and every prompt you send. TinyRouter is roughly 3,000 lines of TypeScript, not counting comments and blank lines (plus about 4,000 of tests), with two runtime dependencies, `yaml` and `zod` — one person can read all of it in an evening.
+- **You want to audit the thing that holds your keys.** A gateway sits between your provider credentials and every prompt you send. TinyRouter is roughly 3,000 lines of TypeScript, not counting comments and blank lines (plus about 4,500 of tests), with two runtime dependencies, `yaml` and `zod` — one person can read all of it in an evening.
 - **You refuse to run infrastructure for a proxy.** One process, one YAML file. No database, no Redis, no admin UI. Prometheus metrics are built in, and the compiled binary runs with nothing else installed.
 - **You run local models with cloud fallback.** Serve your own model first and fail over to a hosted one only when it is down or overloaded:
 

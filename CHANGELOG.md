@@ -2,7 +2,7 @@
 
 Notable changes per release. Versions follow semantic versioning with the 0.x caveat that **minor bumps carry the breaking changes**; patches are fixes. Dates are UTC.
 
-## 0.9.0 — Unreleased
+## 0.9.0 — 2026-10-22
 
 ### Breaking
 
@@ -20,12 +20,17 @@ Notable changes per release. Versions follow semantic versioning with the 0.x ca
 
 - The smoke check's default Anthropic model is now `claude-sonnet-4-6`. It accepts adaptive thinking and forced tool use, and Anthropic and Gemini each get a live `reasoning_effort: "low"` completion. The `fast` example route keeps `claude-haiku-4-5`, with a comment saying it cannot take `reasoning_effort`. Local-fallback examples now use `claude-sonnet-4-6`.
 
+### Fixed
+
+- A provider that answers with an error status and then stops sending its body no longer holds the request open until the client gives up. `timeout_ms` now also bounds reading an error body. If it expires, the error is classified from the status alone, so a stalled `500` still retries or falls back according to `retry_statuses`.
+- The `Authorization` scheme is matched case-insensitively, as RFC 9110 requires, so `bearer <key>` is accepted. A valid key sent with a lowercase scheme was previously refused with `401`. This covers `protect_observability` too.
+
 ### Unchanged
 
 - `seed` is still dropped by both native adapters. It is a best-effort hint, not a protected requirement. TinyRouter does not translate `n` to Gemini's `candidateCount`, because Gemini 3 and later reject values above 1. Thinking output is neither surfaced in responses nor sent back on later turns. OpenAI and generic OpenAI-compatible requests remain passthrough. Skips follow the 0.8.0 rules: they are not retried, not counted as provider attempts, and do not affect circuit breakers. They are logged by parameter name without values.
 - The new `sampling_parameters` and `forced_tool_choice` options default to `forward`, the existing behavior, because models that honor these parameters still need them. TinyRouter still keeps no model catalog: the operator states which providers serve such models, and an account serving both kinds can be configured as two providers with the same key.
 
-## 0.8.0 — 2026-09-27
+## 0.8.0 — 2026-10-21
 
 ### Breaking
 
