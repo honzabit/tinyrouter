@@ -6,7 +6,8 @@ Notable changes per release. Versions follow semantic versioning with the 0.x ca
 
 ### Added
 
-- An install script at `https://tinyrouter.dev/install.sh`. It picks the archive for the system, checks it against the release's `SHA256SUMS`, and unpacks it into the current directory without root. It installs the latest release, or the one passed as `| sh -s -- 0.9.0`. On musl systems such as Alpine, where the glibc-linked executables cannot start, it stops with a message rather than unpacking one. The site serves it from `main`, so it changes without a release; CI installs a real release with it on every push.
+- An install script at `https://tinyrouter.dev/install.sh`. It picks the archive for the system, checks it against the release's `SHA256SUMS`, and unpacks it into the current directory without root. It installs the latest release, or the one passed as `| sh -s -- 0.9.0`. On systems without glibc it installs the musl build, and for releases that have none it stops with a message pointing to the container image. The site serves it from `main`, so it changes without a release; CI installs a real release with it on every push.
+- Executables for musl distributions such as Alpine, where the glibc-linked ones cannot start: `tinyrouter-linux-x64-musl.tar.gz` and `tinyrouter-linux-arm64-musl.tar.gz`, listed in `SHA256SUMS` like the others. They need the C++ runtime, `apk add libstdc++` on Alpine. The release starts the x64 one on Alpine before publishing.
 
 ## 0.9.0 — 2026-10-22
 

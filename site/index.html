@@ -502,9 +502,9 @@
             release's <code>SHA256SUMS</code>, and unpacks <code>tinyrouter</code> and
             <code>tinyrouter.example.yaml</code> into the current directory. It needs no root. Pin a release
             with <code>| sh -s -- 0.9.0</code>. It is
-            <a href="https://github.com/honzabit/tinyrouter/blob/main/site/install.sh">under a hundred lines</a>,
+            <a href="https://github.com/honzabit/tinyrouter/blob/main/site/install.sh">about a hundred lines</a>,
             so read it before you pipe it into a shell. The executable embeds the Bun runtime, so nothing
-            else needs installing.
+            else needs installing, except <code>apk add libstdc++</code> on Alpine.
           </p>
           <details>
             <summary>Or download by hand</summary>
@@ -512,8 +512,10 @@
             <p class="muted small">
               Swap <code>linux-x64</code> for <code>linux-arm64</code>, <code>darwin-x64</code>, or
               <code>darwin-arm64</code>, and check the download against <code>SHA256SUMS</code>. On macOS,
-              extract with <code>tar</code> rather than Finder, which marks the executable as damaged. The
-              Linux builds need glibc. On Alpine, use the container below.
+              extract with <code>tar</code> rather than Finder, which marks the executable as damaged. On
+              Alpine, use <code>linux-x64-musl</code> or <code>linux-arm64-musl</code>, after
+              <code>apk add libstdc++</code>. Releases up to 0.9.0 have no musl build; use the container below
+              for those.
             </p>
           </details>
         </li>

@@ -61,7 +61,7 @@ Every release attaches a standalone executable for Linux and macOS on x64 and ar
 curl -fsSL https://tinyrouter.dev/install.sh | sh
 ```
 
-Pin a release with `| sh -s -- 0.9.0`, or set `TINYROUTER_INSTALL_DIR` to unpack somewhere else. It needs no root and is [under a hundred lines](site/install.sh), so read it before you pipe it into a shell. To do the same by hand:
+Pin a release with `| sh -s -- 0.9.0`, or set `TINYROUTER_INSTALL_DIR` to unpack somewhere else. It needs no root and is [about a hundred lines](site/install.sh), so read it before you pipe it into a shell. To do the same by hand:
 
 ```bash
 curl -fsSL https://github.com/honzabit/tinyrouter/releases/latest/download/tinyrouter-linux-x64.tar.gz | tar -xz
@@ -71,7 +71,7 @@ That leaves a `tinyrouter` executable and a `tinyrouter.example.yaml` in the wor
 
 On macOS, extract with `tar` as above rather than double-clicking the archive: Finder copies its quarantine flag onto the extracted executable, and Gatekeeper then reports the executable as damaged because these builds are ad-hoc signed rather than notarized.
 
-The Linux executables link against glibc, so they do not run on musl distributions such as Alpine; the install script says so rather than unpacking one. Use the container image there.
+On Alpine and other musl distributions, where the glibc-linked executables cannot start, use `linux-x64-musl` or `linux-arm64-musl` instead; the install script picks them for you. They are the one case where something else needs installing, the C++ runtime: `apk add libstdc++`. Releases up to 0.9.0 have no musl build, so use the container image for those.
 
 ### Container
 
