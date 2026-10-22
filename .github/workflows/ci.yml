@@ -26,3 +26,12 @@ jobs:
       # here rather than after a tag has already been cut.
       - run: docker build -t tinyrouter:ci .
       - run: docker run --rm tinyrouter:ci --version
+      # tinyrouter.dev serves the install script from main the moment it
+      # merges, with no release in between, so check it here: lint it, then
+      # install the latest release with it and run what it unpacked.
+      - run: shellcheck --shell=sh site/install.sh
+      - name: Install script
+        run: |
+          dir="$(mktemp -d)"
+          TINYROUTER_INSTALL_DIR="$dir" sh site/install.sh
+          "$dir/tinyrouter" --version

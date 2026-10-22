@@ -55,7 +55,13 @@ Those are good projects, and TinyRouter is not trying to replace them. It exists
 
 ## Install
 
-Every release attaches a standalone executable for Linux and macOS on x64 and arm64, alongside a `SHA256SUMS` file. They embed the Bun runtime, so nothing else needs to be installed:
+Every release attaches a standalone executable for Linux and macOS on x64 and arm64, alongside a `SHA256SUMS` file. They embed the Bun runtime, so nothing else needs to be installed. The install script picks the right one for your system, checks it against `SHA256SUMS`, and unpacks it into the current directory:
+
+```bash
+curl -fsSL https://tinyrouter.dev/install.sh | sh
+```
+
+Pin a release with `| sh -s -- 0.9.0`, or set `TINYROUTER_INSTALL_DIR` to unpack somewhere else. It needs no root and is [under a hundred lines](site/install.sh), so read it before you pipe it into a shell. To do the same by hand:
 
 ```bash
 curl -fsSL https://github.com/honzabit/tinyrouter/releases/latest/download/tinyrouter-linux-x64.tar.gz | tar -xz
@@ -64,6 +70,8 @@ curl -fsSL https://github.com/honzabit/tinyrouter/releases/latest/download/tinyr
 That leaves a `tinyrouter` executable and a `tinyrouter.example.yaml` in the working directory — copy the example to `tinyrouter.yaml` and edit it. The example travels inside the archive so it always matches the executable beside it, and is named `.example.` so extracting over an existing directory cannot overwrite a real configuration. Swap `linux-x64` for `linux-arm64`, `darwin-x64`, or `darwin-arm64` as needed, and check a download against `SHA256SUMS`.
 
 On macOS, extract with `tar` as above rather than double-clicking the archive: Finder copies its quarantine flag onto the extracted executable, and Gatekeeper then reports the executable as damaged because these builds are ad-hoc signed rather than notarized.
+
+The Linux executables link against glibc, so they do not run on musl distributions such as Alpine; the install script says so rather than unpacking one. Use the container image there.
 
 ### Container
 
