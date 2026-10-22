@@ -6,9 +6,17 @@
     <title>TinyRouter — a small, auditable LLM gateway</title>
     <meta
       name="description"
-      content="A self-hosted OpenAI-compatible LLM gateway small enough to read before you hand it your API keys. Deterministic fallback, two dependencies, one YAML file."
+      content="A self-hosted, OpenAI-compatible LLM gateway small enough to read before you hand it your API keys. Ordered fallback across OpenAI, Anthropic, Gemini and local models, two dependencies, one YAML file."
     />
     <link rel="canonical" href="https://tinyrouter.dev/" />
+    <!-- The mark, inlined: a request leaving one point, passing a target it
+         could not use, and landing on the next. No file to fetch or go stale. -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233d5a80'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M9.5 16h4c2.6 0 3.2-6 6.6-6'/%3E%3Cpath d='M13.5 16c2.6 0 3.2 6 6.6 6'/%3E%3Ccircle cx='23' cy='10' r='2.4'/%3E%3C/g%3E%3Ccircle cx='7' cy='16' r='2.6' fill='%23fff'/%3E%3Ccircle cx='23' cy='22' r='2.6' fill='%23fff'/%3E%3C/svg%3E"
+    />
+    <meta name="theme-color" content="#fbfbfa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#16171a" media="(prefers-color-scheme: dark)" />
     <meta property="og:title" content="TinyRouter" />
     <meta
       property="og:description"
@@ -28,6 +36,9 @@
         --bad: #b3402f;
         --accent: #3d5a80;
         --code-bg: #f2f1ee;
+        --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+        --radius: 10px;
+        --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       @media (prefers-color-scheme: dark) {
         :root {
@@ -45,18 +56,16 @@
       * { box-sizing: border-box; }
       body {
         margin: 0;
-        padding: 0 1.25rem 4rem;
+        padding: 0 1rem 4rem;
         background: var(--bg);
         color: var(--ink);
         font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
         -webkit-font-smoothing: antialiased;
       }
       main { max-width: 46rem; margin: 0 auto; }
-      a { color: var(--accent); }
-      code, pre {
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 0.875em;
-      }
+      a { color: var(--accent); text-underline-offset: 0.15em; }
+      a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+      code, pre { font-family: var(--mono); font-size: 0.875em; }
       :not(pre) > code {
         background: var(--code-bg);
         padding: 0.1em 0.35em;
@@ -65,22 +74,26 @@
       pre {
         background: var(--code-bg);
         border: 1px solid var(--line);
-        border-radius: 8px;
+        border-radius: var(--radius);
         padding: 0.85rem 1rem;
         overflow-x: auto;
         line-height: 1.5;
       }
       pre code { background: none; padding: 0; }
-
-      header { padding: 2.5rem 0 2.5rem; }
-      h1 {
-        font-size: clamp(2rem, 7vw, 2.75rem);
-        line-height: 1.1;
-        letter-spacing: -0.02em;
-        margin: 0 0 0.75rem;
+      h2 {
+        margin: 3.25rem 0 0.75rem;
+        padding-top: 1.75rem;
+        border-top: 1px solid var(--line);
+        font-size: 1.35rem;
+        letter-spacing: -0.015em;
       }
-      .lede { font-size: 1.15rem; color: var(--muted); margin: 0 0 1.5rem; max-width: 34rem; }
-      .lede strong { color: var(--ink); font-weight: 600; }
+      h3 { font-size: 1rem; margin: 1.75rem 0 0.5rem; }
+      p { margin: 0 0 1rem; }
+      ul { margin: 0 0 1rem; padding-left: 1.2rem; }
+      li { margin-bottom: 0.35rem; }
+      .muted { color: var(--muted); }
+      .small { font-size: 0.9rem; }
+
       .top {
         display: flex;
         justify-content: flex-end;
@@ -104,34 +117,217 @@
       }
       .top svg { width: 1.15rem; height: 1.15rem; fill: currentColor; display: block; }
 
-      h2 {
-        font-size: 1.3rem;
-        letter-spacing: -0.01em;
-        margin: 3rem 0 0.75rem;
-        padding-top: 1.75rem;
-        border-top: 1px solid var(--line);
+      /* Hero */
+      .hero { padding: 1.75rem 0 0.5rem; }
+      .eyebrow {
+        margin: 0 0 0.9rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
       }
-      h3 { font-size: 1rem; margin: 1.75rem 0 0.5rem; }
-      p { margin: 0 0 1rem; }
-      ul { margin: 0 0 1rem; padding-left: 1.2rem; }
-      li { margin-bottom: 0.35rem; }
-      .muted { color: var(--muted); }
+      h1 {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        margin: 0 0 1rem;
+        font-size: clamp(2.25rem, 8vw, 3.1rem);
+        line-height: 1.05;
+        letter-spacing: -0.025em;
+      }
+      h1 .mark { width: 0.82em; height: 0.82em; flex: none; color: var(--accent); }
+      .lede {
+        margin: 0 0 0.75rem;
+        max-width: 36rem;
+        font-size: clamp(1.2rem, 3.8vw, 1.45rem);
+        line-height: 1.4;
+        letter-spacing: -0.01em;
+      }
+      .lede strong {
+        font-weight: 650;
+        background: linear-gradient(transparent 60%, var(--accent-soft) 0);
+      }
+      .sub { margin: 0 0 1.75rem; max-width: 36rem; color: var(--muted); }
+      .cmd {
+        display: flex;
+        gap: 0.65rem;
+        align-items: baseline;
+        margin: 0;
+        padding: 0.8rem 1rem;
+        background: var(--code-bg);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        overflow-x: auto;
+        white-space: nowrap;
+        font-family: var(--mono);
+        font-size: 0.85rem;
+      }
+      .cmd .prompt { color: var(--muted); user-select: none; }
+      .cmd code { background: none; padding: 0; font-size: inherit; }
+      .nw { white-space: nowrap; }
+      .cmd-note { margin: 0.6rem 0 0; font-size: 0.875rem; color: var(--muted); }
+      .facts {
+        list-style: none;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin: 2rem 0 0;
+        padding: 0;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+      .facts li { margin: 0; padding: 0.9rem 0.75rem 0.9rem 0; }
+      .facts strong {
+        display: block;
+        font-size: 1.55rem;
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+        font-variant-numeric: tabular-nums;
+      }
+      .facts span { font-size: 0.85rem; color: var(--muted); }
 
       table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
       th, td {
         text-align: left;
-        padding: 0.5rem 0.75rem 0.5rem 0;
+        padding: 0.55rem 0.75rem 0.55rem 0;
         border-bottom: 1px solid var(--line);
         vertical-align: top;
       }
       th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+      td code { white-space: nowrap; }
+
+      .pill {
+        display: inline-block;
+        padding: 0.05rem 0.5rem;
+        border-radius: 99px;
+        border: 1px solid currentColor;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        font-size: 0.68rem;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .ok { color: var(--ok); }
+      .bad { color: var(--bad); }
+
+      /* The routing diagram is HTML rather than an image, so it reflows to a
+         column on a phone and follows the reader's theme. */
+      .flow {
+        display: grid;
+        grid-template-columns: auto 2.25rem auto 2.25rem minmax(0, 1fr);
+        align-items: center;
+        margin: 1.25rem 0 0.75rem;
+      }
+      .node {
+        padding: 0.55rem 0.85rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        text-align: center;
+        font-weight: 600;
+        font-size: 0.95rem;
+      }
+      .node small {
+        display: block;
+        font-family: var(--mono);
+        font-weight: 400;
+        font-size: 0.72rem;
+        color: var(--muted);
+      }
+      .node.router {
+        color: var(--accent);
+        border-color: var(--accent);
+        box-shadow: 0 0 0 4px var(--accent-soft);
+      }
+      .arrow { position: relative; height: 1px; margin: 0 0.4rem; background: var(--muted); }
+      .arrow::after {
+        content: "";
+        position: absolute;
+        right: -1px;
+        top: -4px;
+        border: 4.5px solid transparent;
+        border-left: 7px solid var(--muted);
+        border-right: 0;
+      }
+      .targets { list-style: none; display: grid; gap: 0.5rem; margin: 0; padding: 0; counter-reset: target; }
+      .targets li {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        margin: 0;
+        padding: 0.5rem 0.7rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        counter-increment: target;
+        font-family: var(--mono);
+        font-size: 0.8rem;
+      }
+      .targets li::before {
+        content: counter(target);
+        flex: none;
+        display: grid;
+        place-items: center;
+        width: 1.3rem;
+        height: 1.3rem;
+        border-radius: 50%;
+        border: 1px solid var(--line);
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        font-size: 0.7rem;
+        font-weight: 700;
+        color: var(--muted);
+      }
+      /* Break a target only after its slash: a model ID split at a hyphen reads as two. */
+      .targets .t { flex: 1; min-width: 0; overflow-wrap: break-word; }
+      .targets .t > span { white-space: nowrap; }
+      .targets .skipped .t { color: var(--muted); }
+      .targets .served { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+      .flow figcaption { grid-column: 1 / -1; margin-top: 0.85rem; font-size: 0.9rem; color: var(--muted); }
+
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin: 1rem 0; }
+      .card {
+        display: block;
+        padding: 0.95rem 1.05rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+      }
+      .card h3 { margin: 0 0 0.3rem; font-size: 0.98rem; }
+      .card p { margin: 0; font-size: 0.92rem; color: var(--muted); }
+      .contract .card { border-left: 3px solid var(--accent); }
+      a.card { color: inherit; text-decoration: none; }
+      a.card h3 { color: var(--accent); }
+      a.card:hover { border-color: var(--accent); }
+
+      .steps { list-style: none; margin: 1.25rem 0 0; padding: 0; counter-reset: step; }
+      .steps > li { position: relative; margin: 0 0 1.6rem; padding-left: 2.5rem; counter-increment: step; }
+      .steps > li::before {
+        content: counter(step);
+        position: absolute;
+        left: 0;
+        top: -0.05rem;
+        display: grid;
+        place-items: center;
+        width: 1.65rem;
+        height: 1.65rem;
+        border-radius: 50%;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 0.8rem;
+        font-weight: 700;
+      }
+      .steps h3 { margin: 0 0 0.35rem; }
+      .steps pre { margin: 0.5rem 0; }
+      .steps p { margin: 0 0 0.5rem; }
+      details { margin: 0.25rem 0 0; }
+      summary { cursor: pointer; width: fit-content; color: var(--accent); font-size: 0.9rem; }
+      details[open] > summary { margin-bottom: 0.25rem; }
 
       /* A representation of the status page, drawn rather than screenshotted:
          no binary asset to go stale, and it follows the reader's theme. */
       .shot {
         background: var(--panel);
         border: 1px solid var(--line);
-        border-radius: 10px;
+        border-radius: var(--radius);
         padding: 0.9rem 1rem;
         margin-bottom: 0.75rem;
         overflow-x: auto;
@@ -144,19 +340,8 @@
         color: var(--muted);
         font-weight: 600;
       }
-      .shot td { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; }
-      .shot td.n { text-align: right; font-variant-numeric: tabular-nums; }
-      .pill {
-        display: inline-block;
-        padding: 0.05rem 0.45rem;
-        border-radius: 99px;
-        font-size: 0.68rem;
-        font-weight: 700;
-        font-family: ui-sans-serif, system-ui, sans-serif;
-        border: 1px solid currentColor;
-      }
-      .cooling { color: var(--bad); }
-      .healthy { color: var(--ok); }
+      .shot td { font-family: var(--mono); font-size: 0.8rem; }
+      .shot td.n, .shot th.n { text-align: right; font-variant-numeric: tabular-nums; }
 
       footer {
         margin-top: 3.5rem;
@@ -166,6 +351,27 @@
         font-size: 0.9rem;
       }
       footer a { color: var(--muted); }
+
+      @media (max-width: 40rem) {
+        .flow { grid-template-columns: minmax(0, 1fr); }
+        .arrow { width: 1px; height: 1.4rem; margin: 0.3rem auto; }
+        .arrow::after {
+          right: auto;
+          top: auto;
+          left: -4px;
+          bottom: -1px;
+          border: 4.5px solid transparent;
+          border-top: 7px solid var(--muted);
+          border-bottom: 0;
+        }
+        .grid { grid-template-columns: minmax(0, 1fr); }
+      }
+      @media (max-width: 34rem) {
+        /* Short enough to wrap at a space, so the "| sh" is never scrolled out of view. */
+        .cmd { white-space: normal; }
+        .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .facts li:nth-child(-n + 2) { border-bottom: 1px solid var(--line); }
+      }
     </style>
   </head>
   <body>
@@ -189,55 +395,240 @@
         </a>
       </nav>
 
-      <header>
-        <h1>TinyRouter</h1>
-        <p class="lede">
-          A self-hosted, OpenAI-compatible LLM gateway <strong>small enough to read before you hand it
-          your API keys</strong>. Deterministic fallback, two runtime dependencies, one YAML file.
+      <header class="hero">
+        <p class="eyebrow">Self-hosted · OpenAI-compatible · Alpha</p>
+        <h1>
+          <svg class="mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M7 12h3c2 0 2.4-5 5.2-5" />
+              <path d="M10 12c2 0 2.4 5 5.2 5" />
+              <circle cx="18" cy="7" r="2" />
+            </g>
+            <circle cx="4.5" cy="12" r="2.2" fill="currentColor" />
+            <circle cx="18" cy="17" r="2.2" fill="currentColor" />
+          </svg>
+          TinyRouter
+        </h1>
+        <p class="lede">An LLM gateway <strong>small enough to read before you hand it your API keys</strong>.</p>
+        <p class="sub">
+          One OpenAI-compatible endpoint in front of OpenAI, Anthropic, Gemini, and your own models, with
+          fallbacks you write down in YAML rather than ones a router guesses at. No accounts, no database,
+          no dashboard in the gateway.
         </p>
+        <p class="cmd"><span class="prompt" aria-hidden="true">$</span><code>curl -fsSL https://tinyrouter.dev/install.sh <span class="nw">| sh</span></code></p>
+        <p class="cmd-note">
+          Picks the build for your system, checks it against the release's <code>SHA256SUMS</code>, and
+          unpacks it here. <a href="https://github.com/honzabit/tinyrouter/blob/main/site/install.sh">Read it first</a> ·
+          <a href="#quick-start">Quick start</a>
+        </p>
+        <ul class="facts">
+          <li><strong>~3,000</strong><span>lines of TypeScript</span></li>
+          <li><strong>2</strong><span>runtime dependencies</span></li>
+          <li><strong>1</strong><span>YAML file</span></li>
+          <li><strong>0</strong><span>databases to run</span></li>
+        </ul>
       </header>
 
+      <h2 id="routing">Fallbacks you can read</h2>
       <p>
-        A gateway sits between your provider credentials and every prompt you send. TinyRouter is roughly
-        3,000 lines of TypeScript with two runtime dependencies, <code>yaml</code> and <code>zod</code> —
-        one person can read all of it in an evening. It has no accounts, billing, database, Redis, or
-        background control plane, and the gateway serves no dashboard.
+        Give an alias a list of targets. TinyRouter tries them in exactly the order you wrote, and nothing
+        is inferred. Serve your own hardware first and reach for a hosted model only when it cannot answer:
+      </p>
+      <pre><code>routes:
+  assistant:
+    - local/qwen3
+    - anthropic/claude-sonnet-4-6</code></pre>
+      <figure
+        class="flow"
+        aria-label="Your app calls the alias assistant. TinyRouter tries local/qwen3, which answers 503, falls back, and anthropic/claude-sonnet-4-6 serves the response."
+      >
+        <div class="node">Your app<small>"model": "assistant"</small></div>
+        <div class="arrow" aria-hidden="true"></div>
+        <div class="node router">TinyRouter</div>
+        <div class="arrow" aria-hidden="true"></div>
+        <ol class="targets">
+          <li class="skipped"><span class="t">local/<wbr />qwen3</span><span class="pill bad">503 · fall back</span></li>
+          <li class="served"><span class="t">anthropic/<wbr /><span>claude-sonnet-4-6</span></span><span class="pill ok">200 · served</span></li>
+        </ol>
+        <figcaption>
+          Retries and fallbacks happen only before a response starts. Once tokens are flowing, that provider
+          is the answer.
+        </figcaption>
+      </figure>
+
+      <h2 id="guarantees">What it promises</h2>
+      <div class="grid contract">
+        <div class="card">
+          <h3>Fallback in the order you wrote</h3>
+          <p>
+            A target is retried or passed over only for the statuses you list (429 and 5xx by default) or a
+            connection that fails. Never on a heuristic.
+          </p>
+        </div>
+        <div class="card">
+          <h3>No switching mid-stream</h3>
+          <p>
+            Once a provider starts answering, it finishes the answer. Replaying the request elsewhere could
+            duplicate output or tool calls.
+          </p>
+        </div>
+        <div class="card">
+          <h3>No quietly weakened requests</h3>
+          <p>
+            A target that cannot honor part of a request, such as an image format, a strict JSON schema, a
+            reasoning-effort level, or several choices, is skipped before any call. Routing moves on.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Nothing you send is logged</h3>
+          <p>
+            Logs record targets, status codes, and latency. Never prompts, completions, provider keys, or
+            the bearer tokens your clients send.
+          </p>
+        </div>
+      </div>
+      <p class="small">
+        <a href="https://github.com/honzabit/tinyrouter/blob/main/docs/routing.md">The whole routing contract</a>
+        fits on one page.
       </p>
 
-      <h2>Install</h2>
-      <p>Standalone executables for Linux and macOS, x64 and arm64. They embed the Bun runtime, so nothing else is needed:</p>
-      <pre><code>curl -fsSL https://github.com/honzabit/tinyrouter/releases/latest/download/tinyrouter-linux-x64.tar.gz | tar -xz</code></pre>
-      <p>Or run the container:</p>
+      <h2 id="quick-start">Quick start</h2>
+      <ol class="steps">
+        <li>
+          <h3>Install</h3>
+          <pre><code>curl -fsSL https://tinyrouter.dev/install.sh | sh</code></pre>
+          <p class="muted small">
+            The script picks the archive for Linux or macOS on x64 or arm64, checks it against that
+            release's <code>SHA256SUMS</code>, and unpacks <code>tinyrouter</code> and
+            <code>tinyrouter.example.yaml</code> into the current directory. It needs no root. Pin a release
+            with <code>| sh -s -- 0.9.0</code>. It is
+            <a href="https://github.com/honzabit/tinyrouter/blob/main/site/install.sh">under a hundred lines</a>,
+            so read it before you pipe it into a shell. The executable embeds the Bun runtime, so nothing
+            else needs installing.
+          </p>
+          <details>
+            <summary>Or download by hand</summary>
+            <pre><code>curl -fsSL https://github.com/honzabit/tinyrouter/releases/latest/download/tinyrouter-linux-x64.tar.gz | tar -xz</code></pre>
+            <p class="muted small">
+              Swap <code>linux-x64</code> for <code>linux-arm64</code>, <code>darwin-x64</code>, or
+              <code>darwin-arm64</code>, and check the download against <code>SHA256SUMS</code>. On macOS,
+              extract with <code>tar</code> rather than Finder, which marks the executable as damaged. The
+              Linux builds need glibc. On Alpine, use the container below.
+            </p>
+          </details>
+        </li>
+        <li>
+          <h3>Configure</h3>
+          <p>
+            The archive includes an example that matches the executable beside it. Keep the providers you use,
+            add a route like the one above, and export the keys it references:
+          </p>
+          <pre><code>cp tinyrouter.example.yaml tinyrouter.yaml
+export TINYROUTER_API_KEY=local-secret
+export ANTHROPIC_API_KEY=sk-ant-...</code></pre>
+        </li>
+        <li>
+          <h3>Run</h3>
+          <pre><code>./tinyrouter</code></pre>
+          <p class="muted small">
+            It reads <code>tinyrouter.yaml</code> and listens on <code>127.0.0.1:8080</code> until you set
+            <code>server.host</code>. Use <code>--check</code> to validate a configuration without starting.
+          </p>
+        </li>
+        <li>
+          <h3>Call the alias like a model</h3>
+          <pre><code>curl http://localhost:8080/v1/chat/completions \
+  -H 'Authorization: Bearer local-secret' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"assistant","messages":[{"role":"user","content":"Hello"}]}'</code></pre>
+          <p class="muted small">
+            Any client that takes an OpenAI base URL works unchanged: point it at
+            <code>http://localhost:8080/v1</code>.
+          </p>
+        </li>
+      </ol>
+      <p>Or run the multi-architecture container:</p>
       <pre><code>docker run --rm -p 8080:8080 --env-file .env \
   -v "$PWD/tinyrouter.yaml:/etc/tinyrouter/tinyrouter.yaml:ro" \
   ghcr.io/honzabit/tinyrouter:latest</code></pre>
 
-      <h2>Describe your fallbacks in YAML</h2>
+      <h2 id="providers">Providers</h2>
       <p>
-        Serve your own model first and fail over to a hosted one only when it is down or overloaded. Targets
-        are tried in the order you write them — nothing is inferred:
+        Clients always see one shape, OpenAI's <code>/v1/chat/completions</code> and
+        <code>/v1/models</code>, streaming or not. Behind it:
       </p>
-      <pre><code>providers:
-  local:
-    type: openai-compatible
-    base_url: http://localhost:11434/v1
-  anthropic:
-    type: anthropic
-    api_key: ${ANTHROPIC_API_KEY}
+      <table>
+        <thead>
+          <tr><th>Type</th><th>What TinyRouter does</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>openai</code></td><td>Passes Chat Completions through unchanged</td></tr>
+          <tr>
+            <td><code>openai-compatible</code></td>
+            <td>The same for any OpenAI-shaped server, such as Ollama or vLLM. No API key required.</td>
+          </tr>
+          <tr>
+            <td><code>anthropic</code></td>
+            <td>Translates messages, tools, images, and reasoning effort, and normalizes JSON and streams</td>
+          </tr>
+          <tr>
+            <td><code>gemini</code></td>
+            <td>Translates messages, tools, images, JSON mode, and reasoning effort, and normalizes JSON and streams</td>
+          </tr>
+        </tbody>
+      </table>
 
-routes:
-  assistant:
-    - local/qwen3
-    - anthropic/claude-sonnet-4-6</code></pre>
-      <p>Then call the alias exactly as you would call a model:</p>
-      <pre><code>curl http://localhost:8080/v1/chat/completions \
-  -H 'Authorization: Bearer local-secret' \
-  -d '{"model":"assistant","messages":[{"role":"user","content":"Hello"}]}'</code></pre>
+      <h2 id="features">Also in the box</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Request filters</h3>
+          <p>
+            Block API keys and private keys outright. Redact emails, phone numbers, and card numbers before a
+            request leaves. Scope a filter to cloud providers and your local model still sees everything.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Circuit breaking</h3>
+          <p>
+            Opt in, and a provider that keeps failing is demoted to a last resort for a cooldown instead of
+            costing every request its full timeout.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Stall detection</h3>
+          <p>
+            <code>timeout_ms</code> bounds every gap in a response, not just the wait for headers, so a
+            provider that goes quiet halfway through is cut loose.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Prometheus metrics</h3>
+          <p>
+            Requests, attempts, tokens per model, and how every response body ended. Built in, with no
+            exporter to run.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Named API keys</h3>
+          <p>
+            Give each caller its own key and revoke one by deleting a line. The name appears in the request
+            log, never in metrics.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Closed by default</h3>
+          <p>
+            Listens on loopback until you say otherwise, and can put its observability endpoints behind the
+            same key.
+          </p>
+        </div>
+      </div>
 
-      <h2>See what it is doing</h2>
+      <h2 id="status">See what it is doing</h2>
       <p>
-        A single static HTML file ships in <code>ui/</code> and reads the gateway's own endpoints. It shows
-        which providers are healthy, which the circuit breaker has demoted, and where your tokens went:
+        A single static HTML file in <code>ui/</code>, also attached to every release as
+        <code>tinyrouter-ui.html</code>, reads the gateway's own endpoints. It shows which providers are
+        healthy, which the circuit breaker has demoted, and where your tokens went:
       </p>
       <div class="shot">
         <table>
@@ -246,15 +637,15 @@ routes:
               <th class="h">provider</th>
               <th class="h">circuit</th>
               <th class="h">models</th>
-              <th class="h" style="text-align: right">2xx</th>
-              <th class="h" style="text-align: right">errors</th>
-              <th class="h" style="text-align: right">bad bodies</th>
+              <th class="h n">2xx</th>
+              <th class="h n">errors</th>
+              <th class="h n">bad bodies</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td>anthropic</td>
-              <td><span class="pill cooling">cooling</span></td>
+              <td><span class="pill bad">cooling</span></td>
               <td>claude-sonnet-4-6</td>
               <td class="n">0</td>
               <td class="n">3</td>
@@ -262,7 +653,7 @@ routes:
             </tr>
             <tr>
               <td>local</td>
-              <td><span class="pill healthy">healthy</span></td>
+              <td><span class="pill ok">healthy</span></td>
               <td>qwen3</td>
               <td class="n">184</td>
               <td class="n">0</td>
@@ -271,7 +662,7 @@ routes:
           </tbody>
         </table>
       </div>
-      <p class="muted" style="font-size: 0.9rem">
+      <p class="muted small">
         <strong>Bad bodies</strong> is the column no status code can give you: a provider that answers
         <code>200</code> and then hangs part-way through the stream. The status line went out long before
         anyone knew.
@@ -282,12 +673,12 @@ routes:
         with it. That is the whole argument for this project, so it would be odd to make an exception.
       </p>
 
-      <h2>When to use it</h2>
+      <h2 id="fit">When to use it</h2>
       <ul>
         <li><strong>You want to audit the thing that holds your keys.</strong> Two dependencies, no build magic, one file of configuration.</li>
         <li><strong>You refuse to run infrastructure for a proxy.</strong> One process. No database, no Redis, no admin UI.</li>
         <li><strong>You run local models with cloud fallback.</strong> Serve your own hardware first, fail over only when it cannot answer.</li>
-        <li><strong>You need failover you can reason about.</strong> The routing contract fits in a paragraph and never switches providers mid-stream.</li>
+        <li><strong>You need failover you can reason about.</strong> The routing contract fits on a page and never switches providers mid-stream.</li>
         <li><strong>Clients you don't control need one endpoint.</strong> Anything that accepts an OpenAI base URL gets aliases and failover with no code changes.</li>
       </ul>
 
@@ -301,22 +692,42 @@ routes:
           <tr><td>Guardrails, semantic caching, prompt management</td><td><a href="https://github.com/Portkey-AI/gateway">Portkey</a></td></tr>
           <tr><td>A hosted gateway with nothing to operate</td><td><a href="https://openrouter.ai">OpenRouter</a>, <a href="https://developers.cloudflare.com/ai-gateway/">Cloudflare AI Gateway</a></td></tr>
           <tr><td>A hundred providers out of the box</td><td>LiteLLM or a hosted gateway</td></tr>
-          <tr><td>Provider switching inside one app whose code you control</td><td>An SDK such as the <a href="https://ai-sdk.dev">AI SDK</a> — you may not need a proxy at all</td></tr>
+          <tr><td>Provider switching inside one app whose code you control</td><td>An SDK such as the <a href="https://ai-sdk.dev">AI SDK</a>. You may not need a proxy at all.</td></tr>
         </tbody>
       </table>
       <p>Those are good projects. TinyRouter exists for the case where the feature you want most is being able to understand the whole thing.</p>
 
-      <h2>Documentation</h2>
+      <h2 id="docs">Documentation</h2>
       <p>
         Reference lives in the repository, versioned alongside the code, so a clone or a source archive
-        describes the commit you actually have rather than whatever is newest:
+        describes the commit you actually have rather than whatever is newest.
       </p>
-      <ul>
-        <li><a href="https://github.com/honzabit/tinyrouter/blob/main/docs/configuration.md">Configuration</a> — every key, circuit breaking, request filters, finding model IDs</li>
-        <li><a href="https://github.com/honzabit/tinyrouter/blob/main/docs/routing.md">Routing contract</a> — what happens per request, and what each adapter translates</li>
-        <li><a href="https://github.com/honzabit/tinyrouter/blob/main/docs/operations.md">Operations</a> — endpoints, metrics, the status page, shutdown, TLS</li>
-        <li><a href="https://github.com/honzabit/tinyrouter/blob/main/docs/development.md">Development</a> — build, test, smoke against live providers, releasing</li>
-      </ul>
+      <div class="grid">
+        <a class="card" href="https://github.com/honzabit/tinyrouter/blob/main/docs/configuration.md">
+          <h3>Configuration</h3>
+          <p>Every key, circuit breaking, request filters, finding model IDs</p>
+        </a>
+        <a class="card" href="https://github.com/honzabit/tinyrouter/blob/main/docs/routing.md">
+          <h3>Routing contract</h3>
+          <p>What happens per request, and what each adapter translates</p>
+        </a>
+        <a class="card" href="https://github.com/honzabit/tinyrouter/blob/main/docs/operations.md">
+          <h3>Operations</h3>
+          <p>Endpoints, metrics, the status page, shutdown, TLS</p>
+        </a>
+        <a class="card" href="https://github.com/honzabit/tinyrouter/blob/main/docs/development.md">
+          <h3>Development</h3>
+          <p>Build, test, smoke against live providers, releasing</p>
+        </a>
+        <a class="card" href="https://github.com/honzabit/tinyrouter/blob/main/CHANGELOG.md">
+          <h3>Changelog</h3>
+          <p>What changed in each release, and which changes broke something</p>
+        </a>
+        <a class="card" href="https://github.com/honzabit/tinyrouter/blob/main/ui/README.md">
+          <h3>Status page</h3>
+          <p>Serving the page and letting it read your gateway</p>
+        </a>
+      </div>
 
       <footer>
         <p>

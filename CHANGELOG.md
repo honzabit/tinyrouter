@@ -2,6 +2,12 @@
 
 Notable changes per release. Versions follow semantic versioning with the 0.x caveat that **minor bumps carry the breaking changes**; patches are fixes. Dates are UTC.
 
+## Unreleased
+
+### Added
+
+- An install script at `https://tinyrouter.dev/install.sh`. It picks the archive for the system, checks it against the release's `SHA256SUMS`, and unpacks it into the current directory without root. It installs the latest release, or the one passed as `| sh -s -- 0.9.0`. On musl systems such as Alpine, where the glibc-linked executables cannot start, it stops with a message rather than unpacking one. The site serves it from `main`, so it changes without a release; CI installs a real release with it on every push.
+
 ## 0.9.0 — 2026-10-22
 
 ### Breaking
