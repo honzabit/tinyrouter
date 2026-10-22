@@ -51,7 +51,9 @@ function keyTable(server: TinyRouterConfig["server"]): KeyTable {
 function authorize(request: Request, keys: KeyTable): Caller | undefined {
   if (keys.open) return {};
   const header = request.headers.get("authorization");
-  if (header === null || !header.startsWith("Bearer ")) return undefined;
+  // The scheme name is case-insensitive (RFC 9110), and some clients send it
+  // lowercase; refusing those would turn a valid key into a 401.
+  if (header === null || !/^bearer /i.test(header)) return undefined;
   const presented = digest(header.slice(7));
 
   // Every entry is compared, with no early exit on a hit: returning as soon as
@@ -236,8 +238,6 @@ export function createGateway(
       );
     }
 
-    // /healthz is never gated: it reports only that the process is alive, which
-    // discloses nothing, and probes cannot carry a credential.
     if (
       config.server.protect_observability &&
       // /healthz stays open whatever this says - it reports only that the
