@@ -1,0 +1,120 @@
+<!doctype html>
+<!--
+  Source of site/og.png, the 1200x630 card link previews show for tinyrouter.dev.
+  It lives outside site/ because it loads web fonts, which the site itself does
+  not; the PNG it produces has them baked in. Inter and JetBrains Mono are under
+  the SIL Open Font License. Regenerate after changing this file:
+
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+      --hide-scrollbars --window-size=1200,630 --virtual-time-budget=5000 \
+      --screenshot=site/og.png "file://$PWD/scripts/og-image.html"
+    pngquant --force --skip-if-larger --output site/og.png site/og.png
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400&display=block"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #16171a;
+        --panel: #1d1f23;
+        --line: #2e3138;
+        --ink: #e8e6e1;
+        --muted: #999691;
+        --accent: #8fb0d9;
+        --ok: #6fbf8b;
+        --bad: #e2705c;
+      }
+      * { box-sizing: border-box; margin: 0; }
+      html, body { width: 1200px; height: 630px; overflow: hidden; }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, sans-serif;
+        padding: 72px 80px;
+        display: flex;
+        flex-direction: column;
+      }
+      .brand { display: flex; align-items: center; gap: 22px; }
+      .brand svg { width: 76px; height: 76px; color: var(--accent); }
+      .brand h1 { font-size: 84px; font-weight: 700; letter-spacing: -0.035em; line-height: 1; }
+      .tagline {
+        margin-top: 40px;
+        max-width: 960px;
+        font-size: 46px;
+        line-height: 1.22;
+        letter-spacing: -0.02em;
+        color: var(--muted);
+      }
+      .tagline strong { color: var(--ink); font-weight: 600; }
+      .flow {
+        margin-top: auto;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 25px;
+      }
+      .target {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 14px 20px;
+        background: var(--panel);
+        border: 2px solid var(--line);
+        border-radius: 14px;
+      }
+      .target.skipped { color: var(--muted); }
+      .target.served { border-color: #3f6b52; }
+      .pill {
+        font-family: Inter, sans-serif;
+        font-size: 18px;
+        font-weight: 700;
+        padding: 3px 12px;
+        border: 2px solid currentColor;
+        border-radius: 99px;
+      }
+      .bad { color: var(--bad); }
+      .ok { color: var(--ok); }
+      .arrow { color: var(--muted); font-size: 30px; }
+      .foot {
+        margin-top: 34px;
+        display: flex;
+        justify-content: space-between;
+        font-size: 24px;
+        color: var(--muted);
+      }
+      .foot .url { color: var(--accent); font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div class="brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M7 12h3c2 0 2.4-5 5.2-5" />
+          <path d="M10 12c2 0 2.4 5 5.2 5" />
+          <circle cx="18" cy="7" r="2" />
+        </g>
+        <circle cx="4.5" cy="12" r="2.2" fill="currentColor" />
+        <circle cx="18" cy="17" r="2.2" fill="currentColor" />
+      </svg>
+      <h1>TinyRouter</h1>
+    </div>
+    <p class="tagline">
+      An LLM gateway <strong>small enough to read before you hand it your API keys.</strong>
+    </p>
+    <div class="flow">
+      <div class="target skipped">local/qwen3 <span class="pill bad">503 · fall back</span></div>
+      <span class="arrow">→</span>
+      <div class="target served">anthropic/claude-sonnet-4-6 <span class="pill ok">200</span></div>
+    </div>
+    <div class="foot">
+      <span>~3,000 lines · 2 dependencies · 1 YAML file · self-hosted</span>
+      <span class="url">tinyrouter.dev</span>
+    </div>
+  </body>
+</html>
